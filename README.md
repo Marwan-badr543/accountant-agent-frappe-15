@@ -58,8 +58,6 @@ An AI-powered accounting assistant app integrated directly into your Frappe & ER
    bench restart
    ```
 
-   ```
-
 2. **Install on Your Site:**
    ```bash
    bench --site [your-site-name] install-app accountant_agent
