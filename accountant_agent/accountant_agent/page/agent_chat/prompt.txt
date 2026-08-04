@@ -1,0 +1,64 @@
+You are an expert Frappe Framework & Full-Stack Engineer. 
+I need you to generate clean, production-ready code for a Custom Page in my Frappe App called `accountant_agent`.
+
+### SYSTEM CONTEXT & ARCHITECTURE:
+1. Application context: A Frappe App installed on an ERPNext instance.
+2. Purpose: Connects Frappe users to an external SaaS AI Agent Server (let teh url as a variable so i can change it).
+3. App Directory Structure: `apps/accountant_agent/accountant_agent/page/agent_chat/`
+4. Target Files to create/update:
+   - `agent_chat.py` (Backend APIs & External HTTP Proxy)
+   - `agent_chat.js` (Frontend SPA Controller & State Management)
+
+---
+
+### FUNCTIONAL REQUIREMENTS:
+
+#### 1. Authentication & Integration Logic (State 1: Unauthenticated):
+- If NO active access Token is stored locally in Agent Settings doctype for this site/user:
+  - Render an Authentication Card directly in the Page UI.
+  - Include 2 Tabs: [Login] and [Sign Up].
+  - Fields for Sign Up: Email, Password, Company Name.
+  - Fields for Login: Email, Password.
+  - On Submit: Call `agent_chat.py` whitelisted endpoint.
+  - `agent_chat.py` makes a Server-to-Server POST request to the external Agent Server (`/api/v1/auth/login` or `/api/v1/auth/register`).
+  - Upon success, the external Agent Server returns a JWT/API Token.
+  - Store this Token securely in Agent Settings doctype in access token field.
+  - Automatically switch the UI state to the Chat View.
+  - also after sign up , generate uuid code for the user and store it in the Agent Settings doctype in api key field.
+  - after generatign uuid, put it in the endpoin that /home/marwan/frappe/my-bench/apps/accountant_agent/accountant_agent/routers/agent_api.py so agent can call you with your uuid and chat with you. ( if this endpoint not exist create it and  make it expect sql query from the agent and return the data of this query to him)
+
+#### 2. AI Chatbot Interface (State 2: Authenticated):
+- If an active Agent Token EXISTS:
+  - Render a modern, clean AI Chatbot UI (ChatGPT/Claude style).
+  - Include a Header with: Current Connected Email, Connection Status Badge, and a "Disconnect / Logout" button (which clears the stored token and resets the UI).
+  - Chat Area: Messages container with auto-scrolling, User bubbles (right-aligned), Assistant bubbles (left-aligned).
+  - Input Area: Multi-line Auto-expanding Textarea + Send button (supports Enter to send, Shift+Enter for new line).
+  - Support Streaming Response or smooth HTTP Chunk handling from the Python proxy.
+
+#### 3. Security & Proxy Architecture:
+- ALL communications with the external Agent Server MUST pass through the Frappe Python Backend (`agent_chat.py`). 
+- NEVER expose the external Agent API URLs, Master Keys, or Tokens directly to the browser Client-Side JS.
+- Enforce standard Frappe authentication (`@frappe.whitelist()`) and check CSRF tokens.
+
+---
+
+### FILE DELIVERABLES REQUIRED:
+
+#### File 1: `agent_chat.py`
+Provide Python code containing:
+1. `get_connection_status()`: Checks if the site has a stored token.
+2. `authenticate_agent(mode, email, password, company_name)`: Proxy method to login/register against external server and save token.
+4. `send_message(prompt)`: Proxy method that attaches the saved Bearer Token and forwards the user prompt to `https://your-agent-server.com/api/v1/chat`, then returns the AI response. Include proper error handling (`requests.exceptions.RequestException`).
+
+#### File 2: `agent_chat.js`
+Provide JavaScript code using standard `frappe.ui.make_app_page`:
+1. Check `get_connection_status()` on `on_page_load`.
+2. Dynamic DOM rendering for:
+   - State 1: Login/Signup Card (Bootstrap 4/Frappe UI styling with Tab switching logic).
+   - State 2: Full Chat Container (HTML, CSS variables matching Frappe theme like `var(--card-bg)`, `var(--primary-color)`).
+3. Event handlers for Auth submit, Send message, Enter key listener, and Logout click.
+4. Sanitize inputs using `frappe.utils.xss_sanitise`.
+
+---
+
+Please provide the complete, functional implementation code for both `agent_chat.py` and `agent_chat.js` cleanly separated, with clear comments.

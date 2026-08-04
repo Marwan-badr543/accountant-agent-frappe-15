@@ -1,7 +1,26 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Node/Frontend/Build artifacts
+node_modules/
+/dist/
+.eslintcache
+/public/dist/
+
+# System / IDEs / Editors
 .DS_Store
-*.pyc
-*.egg-info
+.vscode/
+.idea/
 *.swp
+*.swo
 tags
-node_modules
-__pycache__
+
+# Logs and databases
+*.log
+/debug_upload.log
+.sqlite

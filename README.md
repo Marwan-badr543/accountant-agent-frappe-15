@@ -1,33 +1,76 @@
-### Accountant Agent
+# Accountant Agent for Frappe 14
 
-acc agent
+An AI-powered accounting assistant app integrated directly into your Frappe & ERPNext version 14 instance. This application exposes a custom interface inside ERPNext and communicates securely with the external Accountant Agent server.
 
-### Installation
+## Features
 
-You can install this app using the [bench](https://github.com/frappe/bench) CLI:
+- **Multi-Agent Modes:**
+  - **Ask Mode:** Quick accounting questions and basic document processing (up to 1 MB per file).
+  - **Analyse Mode:** Detailed analysis of financial reports, ledgers, and transactions.
+  - **Audit Mode:** Interactive auditing and compliance checks on uploaded data.
+- **Secure Authentication:** Single Sign-On proxy registration and login via JWT tokens stored securely on the server.
+- **Modern Chat Interface:** ChatGPT/Claude-style frontend with real-time response rendering, typing animation, and question clarification popups.
+- **Attachment Support:** Select or drag-and-drop financial files (PDF, Docx, Excel, CSV, WebP, WebM, WebR, PNG, JPG) with custom size limits tailored to the chosen agent type.
 
-```bash
-cd $PATH_TO_YOUR_BENCH
-bench get-app $URL_OF_THIS_REPO --branch develop
-bench install-app accountant_agent
-```
+---
 
-### Contributing
+## Installation & Setup
 
-This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:
+1. **Get the App:**
+   ```bash
+   bench get-app accountant_agent # Accountant Agent for Frappe 14
 
-```bash
-cd apps/accountant_agent
-pre-commit install
-```
+An AI-powered accounting assistant app integrated directly into your Frappe & ERPNext version 14 instance. This application exposes a custom interface inside ERPNext and communicates securely with the external Accountant Agent server.
 
-Pre-commit is configured to use the following tools for checking and formatting your code:
+## Features
 
-- ruff
-- eslint
-- prettier
-- pyupgrade
+- **Multi-Agent Modes:**
+  - **Ask Mode:** Quick accounting questions and basic document processing (up to 1 MB per file).
+  - **Analyse Mode:** Detailed analysis of financial reports, ledgers, and transactions.
+  - **Audit Mode:** Interactive auditing and compliance checks on uploaded data.
+- **Secure Authentication:** Single Sign-On proxy registration and login via JWT tokens stored securely on the server.
+- **Modern Chat Interface:** ChatGPT/Claude-style frontend with real-time response rendering, typing animation, and question clarification popups.
+- **Attachment Support:** Select or drag-and-drop financial files (PDF, Docx, Excel, CSV, WebP, WebM, WebR, PNG, JPG) with custom size limits tailored to the chosen agent type.
 
-### License
+---
 
-mit
+## Installation & Setup
+
+1. **Get the App:**
+   ```bash
+   bench get-app accountant_agent https://github.com/Marwan-badr543/accountant-agent-frappe-14
+   ```
+
+2. **Install on Your Site:**
+   ```bash
+   bench --site [your-site-name] install-app accountant_agent
+   ```
+
+3. **Migrate the Database:**
+   ```bash
+   bench --site [your-site-name] migrate
+   ```
+
+4. **Build Assets & Restart:**
+   ```bash
+   bench build
+   bench restart
+   ```
+
+   ```
+
+2. **Install on Your Site:**
+   ```bash
+   bench --site [your-site-name] install-app accountant_agent
+   ```
+
+3. **Migrate the Database:**
+   ```bash
+   bench --site [your-site-name] migrate
+   ```
+
+4. **Build Assets & Restart:**
+   ```bash
+   bench build
+   bench restart
+   ```
