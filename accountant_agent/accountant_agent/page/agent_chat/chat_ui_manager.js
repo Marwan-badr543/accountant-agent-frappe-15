@@ -65,11 +65,131 @@ class ChatUIManager {
 		}
 	}
 
+	render_plan_card(bubble_el, content_json, datetime = null) {
+		try {
+			let data = typeof content_json === 'string' ? JSON.parse(content_json) : content_json;
+			if (!data || data.type !== 'plan') return false;
+
+			let plan_text = data.plan || '';
+			let status = data.status || 'pending';
+			let parsed_markdown = this.parse_markdown(plan_text);
+
+			let status_class = `status-${status}`;
+			let badge_label = status.toUpperCase();
+
+			let header_id = `plan-hdr-${this.chat.generate_uuid()}`;
+			let body_id = `plan-body-${this.chat.generate_uuid()}`;
+			let container_id = `plan-container-${this.chat.generate_uuid()}`;
+			let btn_id = `plan-btn-${this.chat.generate_uuid()}`;
+
+			let actions_html = '';
+			if (status === 'pending') {
+				actions_html = `
+					<div class="plan-actions-wrapper">
+						<button class="plan-btn-approve" id="${btn_id}">
+							<i class="fa fa-play"></i>
+							<span>${__('Approve & Run')}</span>
+						</button>
+					</div>
+				`;
+			}
+
+			let plan_html = `
+				<div class="plan-card-container collapsed" id="${container_id}">
+					<div class="plan-card-header" id="${header_id}">
+						<div class="plan-title-wrapper">
+							<i class="fa fa-list-alt" style="color: var(--chat-primary);"></i>
+							<span>${__('Proposed Execution Plan')}</span>
+							<span class="plan-status-badge ${status_class}">${badge_label}</span>
+						</div>
+						<i class="fa fa-chevron-down plan-caret-icon"></i>
+					</div>
+					<div class="plan-card-body" id="${body_id}">
+						<div class="plan-content-markdown">${parsed_markdown}</div>
+						${actions_html}
+					</div>
+				</div>
+			`;
+
+			bubble_el.empty().append(plan_html);
+			
+			// Click to expand/collapse
+			let container = bubble_el.find(`#${container_id}`);
+			bubble_el.find(`#${header_id}`).on('click', () => {
+				container.toggleClass('collapsed');
+			});
+
+			// Approve button handler
+			if (status === 'pending') {
+				let btn = bubble_el.find(`#${btn_id}`);
+				btn.on('click', (e) => {
+					e.stopPropagation();
+					
+					// Disable button immediately to prevent double-clicks
+					btn.attr('disabled', 'disabled');
+					btn.css('opacity', '0.6');
+					btn.find('span').text(__('Resuming...'));
+					btn.find('i').removeClass('fa-play').addClass('fa-spinner fa-spin');
+					
+
+					// Send "Approve" message to resume the agent
+					this.chat.message_handler.send_chat_message("Approve");
+				});
+			}
+
+			return true;
+		} catch (e) {
+			console.error("Error parsing plan card JSON:", e);
+			return false;
+		}
+	}
+
 	append_message(msg_box, sender, content, animate = false, datetime = null, has_subsequent = false) {
 		msg_box.find('.agent-welcome-state').remove();
 
 		if (!content) content = '';
 		let formatted_time = datetime ? this.format_time(datetime) : '';
+
+
+
+		let is_plan = false;
+		let parsed_data = null;
+		if (content) {
+			if (typeof content === 'object') {
+				if (content.type === 'plan') {
+					is_plan = true;
+					parsed_data = content;
+				}
+			} else if (typeof content === 'string') {
+				let trimmed = content.trim();
+				if (trimmed.startsWith('{') && (trimmed.includes('"type": "plan"') || trimmed.includes('"type":"plan"'))) {
+					try {
+						let parsed = JSON.parse(trimmed);
+						if (parsed && parsed.type === 'plan') {
+							is_plan = true;
+							parsed_data = parsed;
+						}
+					} catch(e) {}
+				}
+			}
+		}
+
+		if (is_plan) {
+			let bubble_id = `msg-${this.chat.generate_uuid()}`;
+			let time_id = `time-${this.chat.generate_uuid()}`;
+			let bubble_html = `
+				<div class="agent-msg-row ai">
+					<div class="agent-msg-bubble" id="${bubble_id}" style="background: transparent; border: none; padding: 0; box-shadow: none; max-width: 100%;">
+					</div>
+					${formatted_time ? `<div class="agent-msg-time" id="${time_id}" style="font-size: 10.5px; color: var(--chat-text-muted); margin-top: 4px; padding: 0 4px;">${formatted_time}</div>` : ''}
+				</div>
+			`;
+			msg_box.append(bubble_html);
+			let bubble_el = msg_box.find(`#${bubble_id}`);
+			this.render_plan_card(bubble_el, parsed_data, datetime);
+			this.scroll_to_bottom(msg_box);
+			return Promise.resolve();
+		}
 
 		let attachments_html = '';
 		let display_content = content;
@@ -107,7 +227,7 @@ class ChatUIManager {
 				`;
 
 				msg_box.append(bubble_html);
-				this.scroll_to_bottom(msg_box);
+				this.force_scroll_to_bottom(msg_box);
 
 				let bubble_el = msg_box.find(`#${bubble_id}`);
 				let time_el = msg_box.find(`#${time_id}`);
@@ -166,6 +286,8 @@ class ChatUIManager {
 						text_el.html(parsed);
 						if (time_el.length) time_el.fadeIn(300);
 						self.scroll_to_bottom(msg_box);
+						self.render_mermaid_diagrams(msg_box);
+						self.render_chartjs_diagrams(msg_box);
 						resolve();
 					}
 				}
@@ -187,7 +309,207 @@ class ChatUIManager {
 
 			msg_box.append(bubble_html);
 			this.scroll_to_bottom(msg_box);
+			this.render_mermaid_diagrams(msg_box);
+			this.render_chartjs_diagrams(msg_box);
 			return Promise.resolve();
+		}
+	}
+
+	create_stream_bubble(msg_box, bubble_id, session_id) {
+		this.hide_typing_indicator(msg_box);
+		msg_box.find('.agent-welcome-state').remove();
+		let bubble_html = `
+			<div class="agent-msg-row ai" id="row-${bubble_id}" data-session-id="${session_id}">
+				<div class="agent-msg-bubble streaming-active" id="${bubble_id}">
+					<!-- Collapsible Thinking Wrapper -->
+					<div class="agent-thinking-wrapper" style="display: none;">
+						<div class="thinking-header-toggle">
+							<div class="thinking-header-left">
+								<span class="thinking-header-icon" style="transform: rotate(90deg);"><i class="fa fa-chevron-right"></i></span>
+								<span class="thinking-header-title">${__('Thinking...')}</span>
+							</div>
+							<span class="thinking-header-timer">0s</span>
+						</div>
+						<div class="thinking-body-content" style="display: block;">
+							<div class="thinking-steps-list"></div>
+							<div class="thinking-reasoning-block" style="display: none;"></div>
+						</div>
+					</div>
+					<!-- Main Response Content -->
+					<div class="agent-msg-text-content"></div>
+				</div>
+				<div class="agent-msg-time" style="font-size: 10.5px; color: var(--chat-text-muted); margin-top: 4px; padding: 0 4px; display: none;"></div>
+			</div>
+		`;
+		msg_box.append(bubble_html);
+		this.scroll_to_bottom(msg_box);
+
+		// Accordion toggle click handler
+		let row = msg_box.find(`#row-${bubble_id}`);
+		row.find('.thinking-header-toggle').on('click', () => {
+			let body = row.find('.thinking-body-content');
+			let icon = row.find('.thinking-header-icon');
+			if (body.is(':visible')) {
+				body.slideUp(150);
+				icon.css('transform', 'rotate(0deg)');
+			} else {
+				body.slideDown(150);
+				icon.css('transform', 'rotate(90deg)');
+			}
+		});
+	}
+
+	update_stream_bubble(msg_box, bubble_id, content) {
+		this.hide_typing_indicator(msg_box);
+		let bubble_el = msg_box.find(`#${bubble_id}`);
+		if (bubble_el.length) {
+			let text_el = bubble_el.find('.agent-msg-text-content');
+			let msg_box_was_near_bottom = this.is_near_bottom(msg_box);
+			let parsed = this.parse_markdown(content);
+			text_el.html(parsed);
+			if (msg_box_was_near_bottom) {
+				this.force_scroll_to_bottom(msg_box);
+			}
+		}
+	}
+
+	update_stream_status(msg_box, bubble_id, status_text, steps = []) {
+		this.hide_typing_indicator(msg_box);
+		let bubble_el = msg_box.find(`#${bubble_id}`);
+		if (bubble_el.length) {
+			let steps_list = bubble_el.find('.thinking-steps-list');
+			let msg_box_was_near_bottom = this.is_near_bottom(msg_box);
+			steps_list.empty();
+			
+			if (steps && steps.length > 0) {
+				steps.forEach((step, idx) => {
+					let is_last = (idx === steps.length - 1);
+					let icon_class = is_last ? 'fa-cog fa-spin' : 'fa-check';
+					let icon_color = is_last ? 'var(--chat-primary)' : '#10a37f';
+					steps_list.append(`
+						<div class="thinking-step-item">
+							<i class="fa ${icon_class}" style="color: ${icon_color}; font-size: 11px;"></i>
+							<span>${step.name}</span>
+						</div>
+					`);
+				});
+			} else if (status_text) {
+				steps_list.append(`
+					<div class="thinking-step-item">
+						<i class="fa fa-cog fa-spin" style="color: var(--chat-primary); font-size: 11px;"></i>
+						<span>${status_text}</span>
+					</div>
+				`);
+			}
+			bubble_el.find('.agent-thinking-wrapper').show();
+			if (msg_box_was_near_bottom) {
+				this.force_scroll_to_bottom(msg_box);
+			}
+		}
+	}
+
+	update_stream_reasoning(msg_box, bubble_id, reasoning_text) {
+		this.hide_typing_indicator(msg_box);
+		let bubble_el = msg_box.find(`#${bubble_id}`);
+		if (bubble_el.length) {
+			let reasoning_block = bubble_el.find('.thinking-reasoning-block');
+			let body_content = bubble_el.find('.thinking-body-content');
+
+			let msg_box_was_near_bottom = this.is_near_bottom(msg_box);
+			let body_was_near_bottom = this.is_near_bottom(body_content);
+
+			let parsed = this.parse_markdown(reasoning_text);
+			reasoning_block.html(parsed).show();
+			bubble_el.find('.agent-thinking-wrapper').show();
+
+			if (body_was_near_bottom && body_content.length) {
+				body_content.scrollTop(body_content[0].scrollHeight);
+			}
+			if (msg_box_was_near_bottom) {
+				this.force_scroll_to_bottom(msg_box);
+			}
+		}
+	}
+
+	update_thinking_duration(msg_box, bubble_id, seconds) {
+		let bubble_el = msg_box.find(`#${bubble_id}`);
+		if (bubble_el.length) {
+			bubble_el.find('.thinking-header-timer').text(`${seconds}s`);
+		}
+	}
+
+	finalize_stream_bubble(msg_box, bubble_id, content, datetime, header_title) {
+		this.hide_typing_indicator(msg_box);
+		let bubble_el = msg_box.find(`#${bubble_id}`);
+		let row_el = msg_box.find(`#row-${bubble_id}`);
+		if (bubble_el.length) {
+			bubble_el.removeClass('streaming-active');
+			
+			// Turn all step icons to checkmarks
+			let steps_list = bubble_el.find('.thinking-steps-list');
+			steps_list.find('.thinking-step-item i').removeClass('fa-cog fa-spin').addClass('fa-check').css('color', '#10a37f');
+			
+			if (header_title) {
+				bubble_el.find('.thinking-header-title').text(header_title);
+			}
+			
+			// Auto collapse accordion to clean the page but keep it toggleable
+			let body = bubble_el.find('.thinking-body-content');
+			let icon = bubble_el.find('.thinking-header-icon');
+			body.slideUp(150);
+			icon.css('transform', 'rotate(0deg)');
+
+
+
+			let is_plan = false;
+			let parsed_data = null;
+			if (content) {
+				if (typeof content === 'object') {
+					if (content.type === 'plan') {
+						is_plan = true;
+						parsed_data = content;
+					}
+				} else if (typeof content === 'string') {
+					let trimmed = content.trim();
+					if (trimmed.startsWith('{') && (trimmed.includes('"type": "plan"') || trimmed.includes('"type":"plan"'))) {
+						try {
+							let parsed = JSON.parse(trimmed);
+							if (parsed && parsed.type === 'plan') {
+								is_plan = true;
+								parsed_data = parsed;
+							}
+						} catch(e) {}
+					}
+				}
+			}
+
+			if (is_plan) {
+				bubble_el.css({
+					'background': 'transparent',
+					'border': 'none',
+					'padding': '0',
+					'box-shadow': 'none',
+					'max-width': '100%'
+				});
+				this.render_plan_card(bubble_el, parsed_data, datetime);
+				bubble_el.find('.agent-thinking-wrapper').hide();
+			} else {
+				let text_el = bubble_el.find('.agent-msg-text-content');
+				let parsed = this.parse_markdown(content);
+				text_el.html(parsed);
+			}
+
+			if (datetime) {
+				let formatted_time = this.format_time(datetime);
+				let time_el = row_el.find('.agent-msg-time');
+				if (time_el.length) {
+					time_el.text(formatted_time).fadeIn(300);
+				}
+			}
+
+			this.force_scroll_to_bottom(msg_box);
+			this.render_mermaid_diagrams(msg_box);
+			this.render_chartjs_diagrams(msg_box);
 		}
 	}
 
@@ -205,19 +527,227 @@ class ChatUIManager {
 			</div>
 		`;
 		msg_box.append(indicator_html);
-		this.scroll_to_bottom(msg_box);
+		this.force_scroll_to_bottom(msg_box);
 	}
 
 	hide_typing_indicator(msg_box) {
 		msg_box.find('#agent-typing-row').remove();
 	}
 
+	is_near_bottom(el, threshold = 60) {
+		if (!el || !el.length || !el[0]) return false;
+		let dom_el = el[0];
+		return (dom_el.scrollHeight - dom_el.scrollTop - dom_el.clientHeight) <= threshold;
+	}
+
 	scroll_to_bottom(msg_box) {
+		if (!msg_box || !msg_box[0]) return;
+		let el = msg_box[0];
+		let is_at_bottom = this.is_near_bottom(msg_box, 100);
+		if (is_at_bottom) {
+			msg_box.scrollTop(el.scrollHeight);
+		}
+	}
+
+	force_scroll_to_bottom(msg_box) {
+		if (!msg_box || !msg_box[0]) return;
 		msg_box.scrollTop(msg_box[0].scrollHeight);
+	}
+
+	render_mermaid_diagrams(container) {
+		if (typeof mermaid === 'undefined') return;
+		let self = this;
+		container.find('.mermaid-container[data-processed="false"]').each(function() {
+			let $this = $(this);
+			let code = decodeURIComponent($this.attr('data-code'));
+			
+			// Remove Mermaid comment lines (starting with %%) and strip trailing whitespace/newlines
+			let clean_code = code.replace(/%%.*$/gm, '').trim();
+
+			if (!clean_code) {
+				$this.attr('data-processed', 'true');
+				$this.hide();
+				return;
+			}
+			
+			// Sanitize transition labels inside |label| to prevent parentheses and brackets from breaking Mermaid parser
+			code = code.replace(/\|([^|\n\r]+)\|/g, function(match, label) {
+				let trimmed = label.trim();
+				if ((trimmed.includes('(') || trimmed.includes(')') || trimmed.includes('[') || trimmed.includes(']') || trimmed.includes('{') || trimmed.includes('}')) && 
+					!(trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+					return `|"${trimmed.replace(/"/g, '\\"')}"|`;
+				}
+				return match;
+			});
+
+			// Sanitize unquoted node labels to prevent syntax errors on special characters/spaces
+			// 1. Double brackets: A[[label]] -> A[["label"]]
+			code = code.replace(/\b([a-zA-Z0-9_-]+)\[\[([^"\]\n\r]+)\]\]/g, '$1[["$2"]]');
+			// 2. Double parentheses: A((label)) -> A(("label"))
+			code = code.replace(/\b([a-zA-Z0-9_-]+)\(\(([^"\)\n\r]+)\)\)/g, '$1(("$2"))');
+			// 3. Stadium: A([label]) -> A(["label"])
+			code = code.replace(/\b([a-zA-Z0-9_-]+)\(\[([^"\]\n\r]+)\]\)/g, '$1(["$2"])');
+			// 4. Cylinder: A[(label)] -> A([\"label\"])
+			code = code.replace(/\b([a-zA-Z0-9_-]+)\[\(([^"\)\n\r]+)\)\]/g, '$1[("$2")]');
+			// 5. Rectangular: A[label] -> A["label"]
+			code = code.replace(/\b([a-zA-Z0-9_-]+)\[([^"\]\n\r]+)\]/g, '$1["$2"]');
+			// 6. Round: A(label) -> A("label")
+			code = code.replace(/\b([a-zA-Z0-9_-]+)\(([^"\)\n\r]+)\)/g, '$1("$2")');
+			// 7. Curly: A{label} -> A{"label"}
+			code = code.replace(/\b([a-zA-Z0-9_-]+)\{([^"\}\n\r]+)\}/g, '$1{"$2"}');
+			// 8. Asymmetric: A>label] -> A>"label"]
+			code = code.replace(/\b([a-zA-Z0-9_-]+)\>([^"\]\n\r]+)\]/g, '$1>"$2"]');
+
+			$this.attr('data-processed', 'true');
+			let id = 'mermaid-' + self.chat.generate_uuid();
+			try {
+				mermaid.render(id, code).then(({ svg }) => {
+					$this.html(svg);
+					self.scroll_to_bottom(container);
+				}).catch(err => {
+					console.error("Mermaid render error:", err);
+					$this.html(`<pre style="color: var(--chat-cancel, #e11d48); background-color: var(--ai-bubble); padding: 10px; border-radius: 6px; font-size: 11px;">Error rendering chart: ${err.message || err}</pre>`);
+					$('#d' + id).remove();
+				});
+			} catch (e) {
+				console.error("Mermaid exception:", e);
+				$this.html(`<pre style="color: var(--chat-cancel, #e11d48); background-color: var(--ai-bubble); padding: 10px; border-radius: 6px; font-size: 11px;">Error rendering chart: ${e.message || e}</pre>`);
+			}
+		});
+	}
+
+	render_chartjs_diagrams(container) {
+		let self = this;
+		if (typeof Chart === 'undefined') {
+			// Poll CDN download every 100ms until loaded
+			setTimeout(() => self.render_chartjs_diagrams(container), 100);
+			return;
+		}
+
+		container.find('.chartjs-container[data-processed="false"]').each(function() {
+			let $this = $(this);
+			let code = decodeURIComponent($this.attr('data-code'));
+			
+			// Defensive formatting cleanup
+			let cleanCode = code.trim();
+			cleanCode = cleanCode.replace(/,\s*([\]}])/g, '$1'); // Clean trailing commas
+			cleanCode = cleanCode.replace(/^```json\s*/i, '').replace(/```$/, '');
+
+			$this.attr('data-processed', 'true');
+
+			try {
+				let chartConfig = JSON.parse(cleanCode);
+
+				if (!chartConfig.type) chartConfig.type = 'bar';
+				if (!chartConfig.data) chartConfig.data = { labels: [], datasets: [] };
+				if (!chartConfig.data.datasets) chartConfig.data.datasets = [];
+
+				// Palette definition
+				const palette = [
+					'#10a37f', // Emerald Green
+					'#3b82f6', // Ocean Blue
+					'#f59e0b', // Amber Yellow
+					'#8b5cf6', // Indigo
+					'#ec4899', // Pink
+					'#ef4444', // Red
+					'#06b6d4', // Cyan
+					'#14b8a6'  // Teal
+				];
+				const hoverPalette = [
+					'#0d8a6a',
+					'#2563eb',
+					'#d97706',
+					'#7c3aed',
+					'#db2777',
+					'#dc2626',
+					'#0891b2',
+					'#0d9488'
+				];
+
+				// Intercept & Auto-Theme Datasets
+				chartConfig.data.datasets.forEach((dataset, idx) => {
+					if (['pie', 'doughnut', 'polarArea'].includes(chartConfig.type)) {
+						const dataLen = dataset.data ? dataset.data.length : 0;
+						dataset.backgroundColor = palette.slice(0, dataLen);
+						dataset.hoverBackgroundColor = hoverPalette.slice(0, dataLen);
+						dataset.borderColor = '#ffffff';
+						dataset.borderWidth = 2;
+					} else {
+						const color = palette[idx % palette.length];
+						const hoverColor = hoverPalette[idx % hoverPalette.length];
+						dataset.backgroundColor = color;
+						dataset.borderColor = color;
+
+						if (['line', 'radar'].includes(chartConfig.type)) {
+							dataset.fill = dataset.fill || false;
+							dataset.tension = 0.3;
+							dataset.backgroundColor = color + '22';
+							dataset.pointBackgroundColor = color;
+							dataset.pointBorderColor = '#ffffff';
+							dataset.pointHoverBackgroundColor = '#ffffff';
+							dataset.pointHoverBorderColor = color;
+						} else if (chartConfig.type === 'bar') {
+							dataset.hoverBackgroundColor = hoverColor;
+							dataset.borderRadius = 6;
+						}
+					}
+				});
+
+				// Auto Merge Responsive Configuration Options
+				const defaultOptions = {
+					responsive: true,
+					maintainAspectRatio: false,
+					plugins: {
+						legend: {
+							display: true,
+							position: 'bottom',
+							labels: {
+								boxWidth: 12,
+								usePointStyle: true,
+								font: {
+									family: 'Inter, sans-serif',
+									size: 11
+								},
+								color: '#4b5563'
+							}
+						}
+					}
+				};
+				chartConfig.options = $.extend(true, {}, defaultOptions, chartConfig.options || {});
+
+				// Safely destroy existing chart instance on reuse
+				let canvasEl = $this.find('canvas')[0];
+				if (canvasEl) {
+					const existingChart = Chart.getChart(canvasEl);
+					if (existingChart) {
+						existingChart.destroy();
+					}
+				}
+
+				// Build canvas and mount chart instance
+				$this.empty().html('<canvas style="width:100% !important; height:100% !important;"></canvas>');
+				canvasEl = $this.find('canvas')[0];
+				new Chart(canvasEl, chartConfig);
+				self.scroll_to_bottom(container);
+			} catch (err) {
+				console.error("Chart.js render error:", err);
+				$this.html(`<pre style="color: var(--chat-cancel, #e11d48); background-color: var(--ai-bubble); padding: 10px; border-radius: 6px; font-size: 11px;">Error parsing chart data: ${err.message || err}</pre>`);
+			}
+		});
 	}
 
 	parse_markdown(text) {
 		if (!text) return '';
+
+		if (window.marked) {
+			try {
+				return window.marked.parse(text);
+			} catch (err) {
+				console.error("Marked parsing error:", err);
+			}
+		}
+
+		// Fallback: Crude basic parsing (original logic)
 		let output = text
 			.replace(/&/g, "&amp;")
 			.replace(/</g, "&lt;")
@@ -272,6 +802,31 @@ class ChatUIManager {
 		if (bold_count % 2 !== 0) temp_output += '**';
 
 		temp_output = temp_output.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+		
+		// Parse Mermaid diagrams first
+		temp_output = temp_output.replace(/```mermaid\s*(?:<br>)?([\s\S]*?)(?:<br>)?```/gi, function(match, code) {
+			let raw_code = code.replace(/<br\s*\/?>/gi, '\n');
+			raw_code = raw_code
+				.replace(/&amp;/g, '&')
+				.replace(/&lt;/g, '<')
+				.replace(/&gt;/g, '>')
+				.replace(/&quot;/g, '"');
+			let escaped_code = encodeURIComponent(raw_code.trim());
+			return `<div class="mermaid-container" data-processed="false" data-code="${escaped_code}"></div>`;
+		});
+
+		// Parse Chart.js diagrams
+		temp_output = temp_output.replace(/```chartjs\s*(?:<br>)?([\s\S]*?)(?:<br>)?```/gi, function(match, code) {
+			let raw_code = code.replace(/<br\s*\/?>/gi, '\n');
+			raw_code = raw_code
+				.replace(/&amp;/g, '&')
+				.replace(/&lt;/g, '<')
+				.replace(/&gt;/g, '>')
+				.replace(/&quot;/g, '"');
+			let escaped_code = encodeURIComponent(raw_code.trim());
+			return `<div class="chartjs-container" data-processed="false" data-code="${escaped_code}"></div>`;
+		});
+
 		temp_output = temp_output.replace(/```(.*?)```/gs, '<pre><code>$1</code></pre>');
 		temp_output = temp_output.replace(/`(.*?)`/g, '<code>$1</code>');
 

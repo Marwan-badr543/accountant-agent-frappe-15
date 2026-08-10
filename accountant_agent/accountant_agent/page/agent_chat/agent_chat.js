@@ -5,6 +5,98 @@ frappe.pages['agent-chat'].on_page_load = function (wrapper) {
 		single_column: true
 	});
 
+	// Dynamically load Mermaid from CDN to support all Frappe versions (including v14)
+	if (!window.mermaid) {
+		let script = document.createElement('script');
+		script.src = 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js';
+		script.onload = () => {
+			if (window.mermaid) {
+				mermaid.initialize({
+					startOnLoad: false,
+					theme: 'base',
+					themeVariables: {
+						primaryColor: '#10a37f', // Emerald Green node background
+						primaryTextColor: '#111827', // Dark node text
+						nodeTextColor: '#111827', // Dark node text fallback
+						primaryBorderColor: '#0d8a6a', // Darker green node border
+						lineColor: '#4b5563', // Dark gray lines for flowcharts
+						textColor: '#111827', // Dark gray default text color (legends, labels)
+						labelTextColor: '#111827', // Dark label text on connector lines
+						edgeLabelBackground: '#ffffff', // White background for connector line text labels
+						secondaryColor: '#f3f4f6',
+						tertiaryColor: '#ffffff',
+						pie1: '#10a37f', // Emerald Green
+						pie2: '#3b82f6', // Ocean Blue
+						pie3: '#f59e0b', // Amber Yellow
+						pie4: '#8b5cf6', // Indigo/Purple
+						pie5: '#ec4899', // Pink
+						pie6: '#ef4444', // Red/Danger
+						pie7: '#06b6d4', // Cyan
+						pie8: '#14b8a6', // Teal
+						pieTitleTextColor: '#111827', // Dark title text
+						pieSectionTextColor: '#ffffff', // White text on slices
+						pieLegendTextColor: '#111827', // Dark legend text
+						pieDataTextColor: '#111827', // Dark label text outside slices
+						xyChart: {
+							plotColorPalette: '#10a37f, #3b82f6, #f59e0b, #8b5cf6, #ec4899, #ef4444, #06b6d4, #14b8a6',
+							titleColor: '#111827',
+							xAxisLabelColor: '#4b5563',
+							xAxisTitleColor: '#111827',
+							xAxisLineColor: '#e5e7eb',
+							yAxisLabelColor: '#4b5563',
+							yAxisTitleColor: '#111827',
+							yAxisLineColor: '#e5e7eb',
+							plotColor: '#10a37f'
+						}
+					},
+					securityLevel: 'loose'
+				});
+			}
+		};
+		document.head.appendChild(script);
+	}
+	
+	// Dynamically load Chart.js from CDN
+	if (!window.Chart) {
+		let script = document.createElement('script');
+		script.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js';
+		document.head.appendChild(script);
+	}
+
+	// Dynamically load marked.js from CDN
+	if (!window.marked) {
+		let script = document.createElement('script');
+		script.src = 'https://cdn.jsdelivr.net/npm/marked/marked.min.js';
+		script.onload = () => {
+			if (window.marked) {
+				const renderer = new window.marked.Renderer();
+				renderer.code = function(code, language) {
+					let code_text = code;
+					let lang = language;
+					if (code && typeof code === 'object') {
+						code_text = code.text;
+						lang = code.lang;
+					}
+					if (lang === 'mermaid') {
+						let escaped_code = encodeURIComponent(code_text.trim());
+						return `<div class="mermaid-container" data-processed="false" data-code="${escaped_code}"></div>`;
+					}
+					if (lang === 'chartjs') {
+						let escaped_code = encodeURIComponent(code_text.trim());
+						return `<div class="chartjs-container" data-processed="false" data-code="${escaped_code}"></div>`;
+					}
+					return `<pre><code>${code_text}</code></pre>`;
+				};
+				window.marked.use({
+					renderer: renderer,
+					breaks: true,
+					gfm: true
+				});
+			}
+		};
+		document.head.appendChild(script);
+	}
+
 	frappe.require([
 		'assets/accountant_agent/js/agent_selector.js',
 		'assets/accountant_agent/js/file_upload_handler.js',
@@ -15,6 +107,8 @@ frappe.pages['agent-chat'].on_page_load = function (wrapper) {
 	], () => {
 		new AccountantAgentChat(wrapper, page);
 	});
+
+
 };
 
 class AccountantAgentChat {
@@ -26,6 +120,8 @@ class AccountantAgentChat {
 		this.connected_email = null;
 		this.active_tab = 'login';
 
+		this.active_streams = {};
+
 		// Instantiate Sub-Managers (Separation of Responsibilities)
 		this.agent_selector = null;
 		this.file_upload_handler = null;
@@ -35,9 +131,233 @@ class AccountantAgentChat {
 		this.message_handler = new ChatMessageHandler(this);
 
 		frappe.realtime.on("agent_clarification_requested", (data) => {
-			if (data && data.session_id === this.session_manager.session_id) {
-				this.ui_manager.hide_typing_indicator(this.msg_box);
-				this.show_clarification_popup(data.questions);
+			if (data && data.session_id) {
+				this.message_handler.show_clarification_popup(data.questions, data.session_id);
+			}
+		});
+
+		frappe.realtime.on("agent_message_chunk", (data) => {
+			if (data && data.session_id) {
+				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
+				this.active_streams = this.active_streams || {};
+				if (!this.active_streams[data.session_id]) {
+					this.active_streams[data.session_id] = {
+						bubble_id: `stream-${this.generate_uuid()}`,
+						accumulated: "",
+						reasoning: "",
+						steps: [],
+						status: "",
+						start_time: Date.now(),
+						elapsed_seconds: 0
+					};
+					this.start_stream_timer(data.session_id);
+				}
+				let stream = this.active_streams[data.session_id];
+				stream.accumulated += data.chunk;
+
+				if (data.session_id === this.session_manager.session_id) {
+					this.ui_manager.update_stream_bubble(this.msg_box, stream.bubble_id, stream.accumulated);
+				}
+			}
+		});
+
+		frappe.realtime.on("agent_message_reasoning", (data) => {
+			if (data && data.session_id) {
+				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
+				this.active_streams = this.active_streams || {};
+				if (!this.active_streams[data.session_id]) {
+					this.active_streams[data.session_id] = {
+						bubble_id: `stream-${this.generate_uuid()}`,
+						accumulated: "",
+						reasoning: "",
+						steps: [],
+						status: "",
+						start_time: Date.now(),
+						elapsed_seconds: 0
+					};
+					this.start_stream_timer(data.session_id);
+				}
+				let stream = this.active_streams[data.session_id];
+				stream.reasoning += data.chunk;
+
+				if (data.session_id === this.session_manager.session_id) {
+					this.ui_manager.update_stream_reasoning(this.msg_box, stream.bubble_id, stream.reasoning);
+				}
+			}
+		});
+
+		frappe.realtime.on("agent_node_start", (data) => {
+			if (data && data.session_id) {
+				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
+				this.active_streams = this.active_streams || {};
+				if (!this.active_streams[data.session_id]) {
+					this.active_streams[data.session_id] = {
+						bubble_id: `stream-${this.generate_uuid()}`,
+						accumulated: "",
+						reasoning: "",
+						steps: [],
+						status: "",
+						start_time: Date.now(),
+						elapsed_seconds: 0
+					};
+					this.start_stream_timer(data.session_id);
+				}
+				let stream = this.active_streams[data.session_id];
+				let node_display_names = {
+					"understand": __("Understanding question & reviewing context..."),
+					"fetch_data": __("Retrieving data from ERPNext / Excel files..."),
+					"clean_data": __("Profiling and cleaning raw data..."),
+					"analyse_chunk": __("Analyzing chunk data..."),
+					"compile": __("Generating final business report & Mermaid charts..."),
+					"agent": __("Thinking...")
+				};
+				let display = node_display_names[data.node] || __("Processing...");
+				stream.status = display;
+
+				if (!stream.steps.some(s => s.name === display)) {
+					stream.steps.push({ name: display, type: 'node' });
+				}
+
+				if (data.session_id === this.session_manager.session_id) {
+					this.ui_manager.update_stream_status(this.msg_box, stream.bubble_id, display, stream.steps);
+				}
+			}
+		});
+
+		frappe.realtime.on("agent_tool_start", (data) => {
+			if (data && data.session_id) {
+				if (this.message_handler.cancelled_sessions.has(data.session_id)) return;
+				this.active_streams = this.active_streams || {};
+				if (!this.active_streams[data.session_id]) {
+					this.active_streams[data.session_id] = {
+						bubble_id: `stream-${this.generate_uuid()}`,
+						accumulated: "",
+						reasoning: "",
+						steps: [],
+						status: "",
+						start_time: Date.now(),
+						elapsed_seconds: 0
+					};
+					this.start_stream_timer(data.session_id);
+				}
+				let stream = this.active_streams[data.session_id];
+				let tool_display_names = {
+					"db_query_sender": __("Querying ERPNext SQL database..."),
+					"get_doctype_schema": __("Reading DocType schema..."),
+					"web_search": __("Searching web for information..."),
+					"calculation": __("Performing calculations..."),
+					"read_document_file": __("Reading attached document..."),
+					"get_excel_sheets": __("Reading sheets from Excel file..."),
+					"query_excel_sheet": __("Querying Excel sheet data...")
+				};
+				let display = tool_display_names[data.tool] || `${__("Running tool")}: ${data.tool}...`;
+				stream.status = display;
+
+				if (!stream.steps.some(s => s.name === display)) {
+					stream.steps.push({ name: display, type: 'tool' });
+				}
+
+				if (data.session_id === this.session_manager.session_id) {
+					this.ui_manager.update_stream_status(this.msg_box, stream.bubble_id, display, stream.steps);
+				}
+			}
+		});
+
+		frappe.realtime.on("agent_message_done", async (data) => {
+			if (data && data.session_id) {
+				if (this.message_handler.cancelled_sessions.has(data.session_id)) {
+					this.message_handler.cancelled_sessions.delete(data.session_id);
+					return;
+				}
+				this.stop_stream_timer(data.session_id);
+				let active_session_id = this.session_manager.session_id;
+				let header_title = __("Completed");
+
+				if (this.active_streams && this.active_streams[data.session_id]) {
+					let stream = this.active_streams[data.session_id];
+					let duration = stream.elapsed_seconds || 0;
+					if (stream.reasoning) {
+						header_title = `${__("Thought for")} ${duration}s`;
+					} else {
+						header_title = `${__("Worked for")} ${duration}s`;
+					}
+
+					if (data.session_id === active_session_id) {
+						this.ui_manager.finalize_stream_bubble(
+							this.msg_box, 
+							stream.bubble_id, 
+							data.response, 
+							new Date().toISOString(),
+							header_title
+						);
+					}
+					delete this.active_streams[data.session_id];
+				}
+
+				if (data.session_id === active_session_id) {
+					this.ui_manager.hide_typing_indicator(this.msg_box);
+					this.message_handler.set_button_state('send');
+				}
+				await this.session_manager.load_chats(false);
+			}
+		});
+
+		frappe.realtime.on("agent_message_error", async (data) => {
+			if (data && data.session_id) {
+				if (this.message_handler.cancelled_sessions.has(data.session_id)) {
+					this.message_handler.cancelled_sessions.delete(data.session_id);
+					return;
+				}
+				this.stop_stream_timer(data.session_id);
+				let active_session_id = this.session_manager.session_id;
+
+				if (this.active_streams && this.active_streams[data.session_id]) {
+					let stream = this.active_streams[data.session_id];
+					if (data.session_id === active_session_id) {
+						this.ui_manager.finalize_stream_bubble(
+							this.msg_box, 
+							stream.bubble_id, 
+							`⚠️ **Error:** ${data.error || __("An error occurred during execution.")}`, 
+							new Date().toISOString(),
+							__("Failed")
+						);
+					}
+					delete this.active_streams[data.session_id];
+				}
+
+				if (data.session_id === active_session_id) {
+					this.ui_manager.hide_typing_indicator(this.msg_box);
+					this.message_handler.set_button_state('send');
+				}
+				await this.session_manager.load_chats(false);
+			}
+		});
+
+		frappe.realtime.on("agent_message_cancelled", async (data) => {
+			if (data && data.session_id) {
+				this.message_handler.cancelled_sessions.delete(data.session_id);
+				this.stop_stream_timer(data.session_id);
+				let active_session_id = this.session_manager.session_id;
+
+				if (this.active_streams && this.active_streams[data.session_id]) {
+					let stream = this.active_streams[data.session_id];
+					if (data.session_id === active_session_id) {
+						this.ui_manager.finalize_stream_bubble(
+							this.msg_box, 
+							stream.bubble_id, 
+							`⚠️ **Cancelled**`, 
+							new Date().toISOString(),
+							__("Cancelled")
+						);
+					}
+					delete this.active_streams[data.session_id];
+				}
+
+				if (data.session_id === active_session_id) {
+					this.ui_manager.hide_typing_indicator(this.msg_box);
+					this.message_handler.set_button_state('send');
+				}
+				await this.session_manager.load_chats(false);
 			}
 		});
 
@@ -387,6 +707,37 @@ class AccountantAgentChat {
 
 	show_clarification_popup(questions) {
 		this.message_handler.show_clarification_popup(questions);
+	}
+
+	start_stream_timer(session_id) {
+		let stream = this.active_streams[session_id];
+		if (!stream) return;
+		if (stream.timer_interval) clearInterval(stream.timer_interval);
+
+		stream.start_time = Date.now();
+		stream.elapsed_seconds = 0;
+		stream.timer_interval = setInterval(() => {
+			if (!this.active_streams || !this.active_streams[session_id]) {
+				clearInterval(stream.timer_interval);
+				return;
+			}
+			let elapsed = Math.round((Date.now() - stream.start_time) / 1000);
+			stream.elapsed_seconds = elapsed;
+
+			if (session_id === this.session_manager.session_id) {
+				this.ui_manager.update_thinking_duration(this.msg_box, stream.bubble_id, elapsed);
+			}
+		}, 1000);
+	}
+
+	stop_stream_timer(session_id) {
+		if (this.active_streams && this.active_streams[session_id]) {
+			let stream = this.active_streams[session_id];
+			if (stream.timer_interval) {
+				clearInterval(stream.timer_interval);
+				stream.timer_interval = null;
+			}
+		}
 	}
 
 	generate_uuid() {

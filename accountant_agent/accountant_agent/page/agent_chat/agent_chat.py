@@ -139,25 +139,30 @@ def save_chat_history(session_id: str, sender: str, content: str) -> None:
 		frappe.db.commit()
 	except Exception as e:
 		frappe.log_error(f"Error saving user message to history: {str(e)}", "Accountant Agent Chat")
-
-
 def get_history_payload(session_id: str) -> list:
-	"""Retrieves the last 10 messages to build chat history context."""
+	"""Retrieves the last 10 messages to build chat history context, formatting JSON structures cleanly."""
 	history_records = frappe.get_all(
 		"Agent Chat History",
 		filters={"session_id": session_id},
 		fields=["sender", "content", "creation"],
 		order_by="creation desc",
-		limit=10
+		limit=30
 	)
-	# Reverse to restore chronological order (oldest first)
-	history_records.reverse()
 	
 	payload = []
 	for rec in history_records:
 		content = rec.content or ""
+		# Format plan JSON if present
+		if rec.sender == "ai" and content.startswith('{"type": "plan"'):
+			try:
+				data = json.loads(content)
+				plan_text = data.get("plan", "")
+				status = data.get("status", "pending")
+				content = f"Proposed Analysis Plan:\n{plan_text}\n\nUser Confirmation Status: {status.capitalize()}"
+			except Exception:
+				pass
 		# Format clarification json if present
-		if rec.sender == "ai" and content.startswith('{"type": "clarification"'):
+		elif rec.sender == "ai" and content.startswith('{"type": "clarification"'):
 			try:
 				data = json.loads(content)
 				formatted_qs = []
@@ -174,9 +179,12 @@ def get_history_payload(session_id: str) -> list:
 			"role": "user" if rec.sender == "human" else "assistant",
 			"content": content
 		})
+		
+	# Slice the last 10 messages (or fewer if not available)
+	payload = payload[:10]
+	# Reverse to restore chronological order (oldest first)
+	payload.reverse()
 	return payload
-
-
 def post_message_to_agent(
 	message: str,
 	history: list,
@@ -325,9 +333,36 @@ def authenticate_agent(mode, email, password, company_name=None):
 	}
 
 
+def get_latest_plan_message(session_id: str, lock: bool = False):
+	"""Find the latest plan message in Agent Chat History for the given session."""
+	messages = frappe.get_all(
+		"Agent Chat History",
+		filters={"session_id": session_id},
+		fields=["name", "content"],
+		order_by="creation desc",
+		limit=20
+	)
+	for msg in messages:
+		if msg.content and msg.content.startswith('{"type": "plan"'):
+			if lock:
+				try:
+					# Apply row-level lock using FOR UPDATE with appropriate error handling
+					frappe.db.sql(
+						"select name from `tabAgent Chat History` where name=%s for update",
+						msg.name
+					)
+					# Return fresh doc after lock is acquired
+					return frappe.get_doc("Agent Chat History", msg.name)
+				except Exception as e:
+					frappe.log_error(f"Database lock timeout or error: {str(e)}", "Accountant Agent Plan Lock")
+					frappe.throw(_("Could not acquire lock on the plan record. Please try again."))
+			return msg
+	return None
+
+
 @frappe.whitelist()
 def send_message(message, session_id, agent_email, agent_type="ask", file_urls=None):
-	"""Proxy message send to agent, handle token expiration/refresh, and save chat history."""
+	"""Proxy message send to agent by enqueuing a background worker to handle streaming."""
 	user = frappe.session.user
 	if user == "Guest":
 		frappe.throw(_("Not authenticated with ERPNext."))
@@ -337,69 +372,229 @@ def send_message(message, session_id, agent_email, agent_type="ask", file_urls=N
 		frappe.throw(_("Not authenticated with Accountant Agent."))
 		
 	access_token = doc.get_password("access_token")
-	
 	if not access_token:
 		frappe.throw(_("Missing access token. Please re-authenticate."))
-
-	custom_instructions = getattr(doc, "custom_instructions", None) or ""
 
 	# Deserialize file_urls list if sent as JSON string
 	parsed_file_urls = _parse_json_list(file_urls)
 
-	# 1. Save user message to client DB if not a clarification response
-	if not message.startswith("Clarification Response:"):
+	# Update pending plan status if any
+	latest_plan = get_latest_plan_message(session_id, lock=True)
+	if latest_plan:
+		try:
+			plan_data = json.loads(latest_plan.content)
+			if plan_data.get("status") == "pending":
+				if message == "Approve":
+					plan_data["status"] = "approved"
+				else:
+					plan_data["status"] = "refused"
+				latest_plan.content = json.dumps(plan_data, ensure_ascii=False)
+				latest_plan.save(ignore_permissions=True)
+				frappe.db.commit()
+		except Exception as e:
+			frappe.log_error(f"Error updating plan status JSON: {str(e)}", "Accountant Agent Plan Status Update")
+
+	# Save user message to client DB if not "Approve" and not a clarification response
+	if message != "Approve" and not message.startswith("Clarification Response:"):
 		save_chat_history(session_id, "human", message)
 		update_chat_timestamp(session_id)
 
-	# 2. Get chat history payload
+	# Enqueue the task to background worker to avoid HTTP timeout
+	frappe.enqueue(
+		"accountant_agent.accountant_agent.page.agent_chat.agent_chat.process_agent_message_background",
+		queue="long",
+		timeout=600,
+		message=message,
+		session_id=session_id,
+		agent_email=agent_email,
+		agent_type=agent_type,
+		file_urls=parsed_file_urls,
+		user=user,
+	)
+
+	return {"status": "queued", "session_id": session_id}
+
+
+def process_agent_message_background(
+	message: str,
+	session_id: str,
+	agent_email: str,
+	agent_type: str,
+	file_urls: list,
+	user: str,
+) -> None:
+	"""Runs agent chat execution in a background worker task and streams progress to client."""
+	frappe.set_user(user)
+
+	doc = get_agent_settings_doc(agent_email)
+	if not doc:
+		error_msg = f"Agent Settings not found for {agent_email}."
+		frappe.log_error(error_msg, "Accountant Agent Stream")
+		frappe.publish_realtime(
+			event="agent_message_error",
+			message={"session_id": session_id, "error": error_msg},
+			user=user,
+		)
+		return
+
+	access_token = doc.get_password("access_token")
+	if not access_token:
+		error_msg = "Access token missing. Please reconnect."
+		frappe.publish_realtime(
+			event="agent_message_error",
+			message={"session_id": session_id, "error": error_msg},
+			user=user,
+		)
+		return
+
+	custom_instructions = getattr(doc, "custom_instructions", None) or ""
 	history_payload = get_history_payload(session_id)
 
-	# 3. Call agent server ask API
+	headers = {
+		"Authorization": f"Bearer {access_token}",
+	}
+	payload_data = {
+		"message": message,
+		"history": json.dumps(history_payload) if history_payload else "",
+		"custom_instructions": custom_instructions,
+		"session_id": session_id or "",
+		"erp_system": "ERPNext",
+		"stream": "true",
+	}
+
+	files_list = []
+	opened_files = []
+
 	try:
-		response = post_message_to_agent(
-			message, history_payload, access_token,
-			custom_instructions=custom_instructions,
-			session_id=session_id,
-			agent_type=agent_type,
-			file_urls=parsed_file_urls,
+		if file_urls:
+			for url in file_urls:
+				filename = os.path.basename(url)
+				if "agent_uploads" in url:
+					file_path = frappe.get_site_path("public", "files", "agent_uploads", filename)
+				else:
+					file_path = frappe.get_site_path("public", "files", filename)
+
+				if os.path.exists(file_path):
+					f_obj = open(file_path, "rb")
+					opened_files.append(f_obj)
+					clean_filename = filename[13:] if (len(filename) > 13 and filename[12] == '_') else filename
+					files_list.append(("files", (clean_filename, f_obj)))
+
+		agent_endpoint = agent_type if agent_type in ("ask", "analyse", "audit") else "ask"
+		endpoint_url = f"{AGENT_SERVER_URL}/agent/{agent_endpoint}"
+
+		response = requests.post(
+			endpoint_url,
+			data=payload_data,
+			files=files_list if files_list else None,
+			headers=headers,
+			stream=True,
+			timeout=600,
 		)
-		
-		# 4. Handle expired token (401)
+
 		if response.status_code == 401:
 			new_access_token = refresh_agent_token_on_server(access_token)
 			if new_access_token:
 				save_agent_settings(agent_email, access_token=new_access_token)
-				response = post_message_to_agent(
-					message, history_payload, new_access_token,
-					custom_instructions=custom_instructions,
-					session_id=session_id,
-					agent_type=agent_type,
-					file_urls=parsed_file_urls,
+				headers["Authorization"] = f"Bearer {new_access_token}"
+				
+				# Re-open/reset files
+				for f in opened_files:
+					f.seek(0)
+					
+				response = requests.post(
+					endpoint_url,
+					data=payload_data,
+					files=files_list if files_list else None,
+					headers=headers,
+					stream=True,
+					timeout=600,
 				)
 			else:
-				# Clear invalid token to force re-login
 				save_agent_settings(agent_email, access_token="")
-				frappe.throw(_("Session expired. Please reconnect."))
-				
+				raise Exception("Session expired. Please reconnect.")
+
 		if response.status_code == 499:
-			# Silent cancellation - do not throw error
-			return {"cancelled": True}
+			frappe.publish_realtime(
+				event="agent_message_cancelled",
+				message={"session_id": session_id},
+				user=user,
+			)
+			return
 
 		if response.status_code != 200:
-			error_msg = response.json().get("detail", "Error from Agent Server.")
-			frappe.throw(_(f"Agent Server Error: {error_msg}"))
-			
-		ai_response = response.json().get("response")
-		
-		# 5. Store AI response in Client DB
-		save_chat_history(session_id, "ai", ai_response)
-		update_chat_timestamp(session_id)
-		
-		return {"response": ai_response}
-		
-	except requests.exceptions.RequestException as e:
-		frappe.log_error(f"Agent chat request exception: {str(e)}", "Accountant Agent Chat")
-		frappe.throw(_("Unable to communicate with Agent Server. Please check if it's running."))
+			try:
+				err_detail = response.json().get("detail", "Error from Agent Server.")
+			except Exception:
+				err_detail = response.text or "Error from Agent Server."
+			raise Exception(err_detail)
+
+		current_event = None
+		for line in response.iter_lines():
+			if not line:
+				continue
+			line_str = line.decode("utf-8").strip()
+			if line_str.startswith("event:"):
+				current_event = line_str[6:].strip()
+			elif line_str.startswith("data:"):
+				data_str = line_str[5:].strip()
+				try:
+					data_json = json.loads(data_str)
+				except Exception:
+					data_json = {"text": data_str}
+
+				if current_event == "text":
+					frappe.publish_realtime(
+						event="agent_message_chunk",
+						message={"session_id": session_id, "chunk": data_json.get("text", "")},
+						user=user,
+					)
+				elif current_event == "reasoning":
+					frappe.publish_realtime(
+						event="agent_message_reasoning",
+						message={"session_id": session_id, "chunk": data_json.get("text", "")},
+						user=user,
+					)
+				elif current_event == "node_start":
+					frappe.publish_realtime(
+						event="agent_node_start",
+						message={"session_id": session_id, "node": data_json.get("node", "")},
+						user=user,
+					)
+				elif current_event == "tool_start":
+					frappe.publish_realtime(
+						event="agent_tool_start",
+						message={"session_id": session_id, "tool": data_json.get("tool", ""), "input": data_json.get("input", {})},
+						user=user,
+					)
+				elif current_event == "done":
+					ai_response = data_json.get("response", "")
+					save_chat_history(session_id, "ai", ai_response)
+					update_chat_timestamp(session_id)
+
+					frappe.publish_realtime(
+						event="agent_message_done",
+						message={"session_id": session_id, "response": ai_response},
+						user=user,
+					)
+				elif current_event == "error":
+					raise Exception(data_json.get("detail", "Unknown error in stream"))
+
+	except Exception as e:
+		error_msg = str(e)
+		frappe.log_error(f"Error processing agent message in background: {error_msg}", "Accountant Agent Chat Background")
+		frappe.publish_realtime(
+			event="agent_message_error",
+			message={"session_id": session_id, "error": error_msg},
+			user=user,
+		)
+	finally:
+		for f in opened_files:
+			try:
+				f.close()
+			except Exception:
+				pass
+
 
 
 @frappe.whitelist()

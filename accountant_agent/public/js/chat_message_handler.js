@@ -9,6 +9,67 @@ class ChatMessageHandler {
 	constructor(chat_instance) {
 		this.chat = chat_instance;
 		this.is_cancelled = false;
+		this.processing_sessions = new Set();
+		this.cancelled_sessions = new Set();
+		this.drafts = {};
+		this.clarifications = {};
+	}
+
+	save_draft(session_id) {
+		if (!session_id) return;
+		let text = this.chat.textarea.val() || '';
+		let attachments = [];
+		if (this.chat.file_upload_handler) {
+			attachments = [...this.chat.file_upload_handler.pending_attachments];
+		}
+		this.drafts[session_id] = {
+			text: text,
+			attachments: attachments
+		};
+	}
+
+	restore_draft(session_id) {
+		if (!session_id) return;
+		let draft = this.drafts[session_id] || { text: '', attachments: [] };
+		this.chat.textarea.val(draft.text);
+		this.chat.textarea.trigger('input');
+
+		if (this.chat.file_upload_handler) {
+			this.chat.file_upload_handler.$preview_area.find('.agent-upload-preview-items').empty();
+			this.chat.file_upload_handler.$preview_area.hide();
+			this.chat.file_upload_handler.pending_attachments = [...draft.attachments];
+
+			if (draft.attachments.length > 0) {
+				draft.attachments.forEach(att => {
+					let is_img = att.is_image;
+					let type = is_img ? 'image' : 'file';
+					let icon_html;
+					if (type === 'image') {
+						icon_html = `<img src="${att.url}" class="agent-preview-thumb" alt="${att.name}" />`;
+					} else {
+						icon_html = `<span class="agent-preview-icon">${this.chat.file_upload_handler._get_file_icon(att.name)}</span>`;
+					}
+
+					let $item = $(`
+						<div class="agent-preview-item success" id="${att.id}" data-type="${type}" data-name="${att.name}">
+							${icon_html}
+							<span class="agent-preview-name" title="${att.name}">${this.chat.file_upload_handler._truncate_name(att.name, 20)}</span>
+							<button class="agent-preview-remove" title="${__('Remove')}">
+								<i class="fa fa-times"></i>
+							</button>
+						</div>
+					`);
+
+					$item.find('.agent-preview-remove').on('click', (e) => {
+						e.stopPropagation();
+						this.chat.file_upload_handler._remove_attachment(att.id);
+					});
+
+					this.chat.file_upload_handler.$preview_area.find('.agent-upload-preview-items').append($item);
+				});
+				this.chat.file_upload_handler.$preview_area.show();
+			}
+		}
 	}
 
 	async send_user_message() {
@@ -52,7 +113,6 @@ class ChatMessageHandler {
 
 		message = frappe.utils.xss_sanitise(message);
 		let active_session_id = session_id;
-		this.is_cancelled = false;
 
 		// Handle unsaved draft
 		if (this.chat.session_manager.is_new_chat_draft) {
@@ -69,6 +129,7 @@ class ChatMessageHandler {
 				if (this.chat.session_manager.session_id === active_session_id) {
 					this.chat.session_manager.is_new_chat_draft = false;
 				}
+				await this.chat.session_manager.load_chats(false);
 			} catch (e) {
 				console.error("Failed to initialize chat session:", e);
 				frappe.dom.unfreeze();
@@ -79,13 +140,30 @@ class ChatMessageHandler {
 		}
 
 		if (this.chat.session_manager.session_id === active_session_id) {
-			if (!message.startswith || !message.startswith("Clarification Response:")) {
+			if (message !== "Approve" && (!message.startsWith || !message.startsWith("Clarification Response:"))) {
 				this.chat.ui_manager.append_message(this.chat.msg_box, 'user', message, false, new Date().toISOString());
 			}
-			this.chat.ui_manager.show_typing_indicator(this.chat.msg_box);
+			
+			// Initialize the stream bubble immediately with "Thinking..." status
+			let stream_id = `stream-${this.chat.generate_uuid()}`;
+			this.chat.active_streams = this.chat.active_streams || {};
+			this.chat.active_streams[active_session_id] = {
+				bubble_id: stream_id,
+				accumulated: "",
+				reasoning: "",
+				steps: [{ name: __("Thinking..."), type: 'node' }],
+				status: __("Thinking..."),
+				start_time: Date.now(),
+				elapsed_seconds: 0
+			};
+			this.chat.start_stream_timer(active_session_id);
+			
+			this.chat.ui_manager.create_stream_bubble(this.chat.msg_box, stream_id, active_session_id);
+			this.chat.ui_manager.update_stream_status(this.chat.msg_box, stream_id, __("Thinking..."), [{ name: __("Thinking..."), type: 'node' }]);
 			this.set_button_state('cancel');
 		}
 
+		this.processing_sessions.add(active_session_id);
 		let agent_type = this.chat.agent_selector ? this.chat.agent_selector.get_selected_agent() : 'ask';
 
 		try {
@@ -101,17 +179,36 @@ class ChatMessageHandler {
 				}
 			);
 
-			if (this.is_cancelled) {
-				this.is_cancelled = false;
+			if (this.cancelled_sessions.has(active_session_id)) {
+				this.cancelled_sessions.delete(active_session_id);
 				return;
 			}
 
 			if (this.chat.session_manager.session_id === active_session_id) {
-				this.chat.ui_manager.hide_typing_indicator(this.chat.msg_box);
+				if (res && res.status === 'queued') {
+					// Bubble and timer are already running, render background sidebar list and return
+					this.chat.session_manager.render_chat_list();
+					return;
+				}
+
 				this.set_button_state('send');
 				if (res && res.response) {
 					await this.chat.session_manager.load_chats(false);
-					await this.chat.ui_manager.append_message(this.chat.msg_box, 'ai', res.response, true, new Date().toISOString());
+					
+					// If completed synchronously without streaming, finalize the existing stream bubble
+					if (this.chat.active_streams && this.chat.active_streams[active_session_id]) {
+						let stream = this.chat.active_streams[active_session_id];
+						this.chat.ui_manager.finalize_stream_bubble(
+							this.chat.msg_box,
+							stream.bubble_id,
+							res.response,
+							new Date().toISOString(),
+							__("Completed")
+						);
+						delete this.chat.active_streams[active_session_id];
+					} else {
+						await this.chat.ui_manager.append_message(this.chat.msg_box, 'ai', res.response, true, new Date().toISOString());
+					}
 				} else {
 					await this.chat.session_manager.load_chats(false);
 				}
@@ -119,21 +216,35 @@ class ChatMessageHandler {
 				await this.chat.session_manager.load_chats(false);
 			}
 		} catch (err) {
-			if (this.is_cancelled) {
-				this.is_cancelled = false;
+			if (this.cancelled_sessions.has(active_session_id)) {
+				this.cancelled_sessions.delete(active_session_id);
 				return;
 			}
 
 			if (this.chat.session_manager.session_id === active_session_id) {
-				this.chat.ui_manager.hide_typing_indicator(this.chat.msg_box);
 				this.set_button_state('send');
 				console.error("Message send failed:", err);
 				let error_msg = err.message || '';
 				if (!error_msg.includes('cancelled') && !error_msg.includes('cancellation')) {
 					let final_err = error_msg || __('Unable to get response from Accountant Agent.');
-					this.chat.ui_manager.append_message(this.chat.msg_box, 'ai', `⚠️ **Error:** ${final_err}`);
+					if (this.chat.active_streams && this.chat.active_streams[active_session_id]) {
+						let stream = this.chat.active_streams[active_session_id];
+						this.chat.ui_manager.finalize_stream_bubble(
+							this.chat.msg_box,
+							stream.bubble_id,
+							`⚠️ **Error:** ${final_err}`,
+							new Date().toISOString(),
+							__("Failed")
+						);
+						delete this.chat.active_streams[active_session_id];
+					} else {
+						this.chat.ui_manager.append_message(this.chat.msg_box, 'ai', `⚠️ **Error:** ${final_err}`);
+					}
 				}
 			}
+		} finally {
+			this.processing_sessions.delete(active_session_id);
+			delete this.clarifications[active_session_id];
 		}
 	}
 
@@ -143,7 +254,7 @@ class ChatMessageHandler {
 			btn.removeClass('agent-send-btn').addClass('agent-cancel-btn');
 			btn.attr('title', __('Cancel Execution'));
 			btn.html(`<svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>`);
-			this.chat.textarea.prop('disabled', true);
+			this.chat.textarea.prop('disabled', false);
 		} else {
 			btn.removeClass('agent-cancel-btn').addClass('agent-send-btn');
 			btn.attr('title', __('Send Message'));
@@ -151,6 +262,7 @@ class ChatMessageHandler {
 			btn.prop('disabled', false).css('opacity', 1);
 			this.chat.textarea.prop('disabled', false);
 			this.chat.textarea.focus();
+			this.chat.textarea.trigger('input');
 		}
 	}
 
@@ -161,7 +273,21 @@ class ChatMessageHandler {
 		let agent_email = localStorage.getItem('connected_agent_email');
 		if (!agent_email) return;
 
-		this.is_cancelled = true;
+		this.cancelled_sessions.add(session_id);
+		this.chat.stop_stream_timer(session_id);
+
+		if (this.chat.active_streams && this.chat.active_streams[session_id]) {
+			let stream = this.chat.active_streams[session_id];
+			this.chat.ui_manager.finalize_stream_bubble(
+				this.chat.msg_box,
+				stream.bubble_id,
+				`⚠️ **Cancelled**`,
+				new Date().toISOString(),
+				__("Cancelled")
+			);
+			delete this.chat.active_streams[session_id];
+		}
+
 		this.chat.ui_manager.hide_typing_indicator(this.chat.msg_box);
 
 		if (this.chat.popup_container) {
@@ -169,6 +295,7 @@ class ChatMessageHandler {
 		}
 
 		this.set_button_state('send');
+		this.chat.session_manager.render_chat_list();
 
 		frappe.xcall(
 			'accountant_agent.accountant_agent.page.agent_chat.agent_chat.cancel_agent',
@@ -178,26 +305,36 @@ class ChatMessageHandler {
 		});
 	}
 
-	show_clarification_popup(questions) {
-		if (!questions || questions.length === 0) return;
+	show_clarification_popup(questions, session_id = null) {
+		if (!session_id) {
+			session_id = this.chat.session_manager.session_id;
+		}
+		if (!session_id || !questions || questions.length === 0) return;
 
-		this.clarification_questions = questions;
-		this.clarification_index = 0;
-		this.clarification_answers = {};
+		this.clarifications[session_id] = {
+			questions: questions,
+			index: 0,
+			answers: {}
+		};
 
-		this.set_button_state('cancel');
-		this.render_popup_question();
+		if (this.chat.session_manager.session_id === session_id) {
+			this.set_button_state('cancel');
+			this.render_popup_question(session_id);
+		}
 	}
 
-	render_popup_question() {
-		let q = this.clarification_questions[this.clarification_index];
-		let total = this.clarification_questions.length;
-		let current_num = this.clarification_index + 1;
+	render_popup_question(session_id) {
+		let state = this.clarifications[session_id];
+		if (!state) return;
+
+		let q = state.questions[state.index];
+		let total = state.questions.length;
+		let current_num = state.index + 1;
 
 		let options_html = '';
 		if (q.options && q.options.length > 0) {
 			let rows = q.options.map((opt, idx) => {
-				let is_active = this.clarification_answers[q.id] === opt;
+				let is_active = state.answers[q.id] === opt;
 				return `
 					<div class="clarification-row-option ${is_active ? 'active' : ''}" data-value="${opt}">
 						<span class="option-num">${idx + 1}</span>
@@ -210,8 +347,8 @@ class ChatMessageHandler {
 
 		let custom_input_html = '';
 		if (q.allow_custom !== false) {
-			let is_custom_active = this.clarification_answers[q.id] && (!q.options || !q.options.includes(this.clarification_answers[q.id]));
-			let custom_val = is_custom_active ? this.clarification_answers[q.id] : '';
+			let is_custom_active = state.answers[q.id] && (!q.options || !q.options.includes(state.answers[q.id]));
+			let custom_val = is_custom_active ? state.answers[q.id] : '';
 			custom_input_html = `
 				<div class="clarification-row-option custom-option-row ${is_custom_active ? 'active' : ''}" style="flex-direction: column; align-items: stretch; gap: 8px;">
 					<div style="display: flex; align-items: center; gap: 10px;">
@@ -253,32 +390,34 @@ class ChatMessageHandler {
 		`;
 
 		this.chat.popup_container.html(popup_html).show();
-		this.setup_popup_question_events(q);
+		this.setup_popup_question_events(q, session_id);
 	}
 
-	setup_popup_question_events(q) {
+	setup_popup_question_events(q, session_id) {
 		let self = this;
+		let state = this.clarifications[session_id];
+		if (!state) return;
 
 		this.chat.popup_container.find('.btn-prev').on('click', (e) => {
 			e.preventDefault();
-			if (this.clarification_index > 0) {
-				this.clarification_index--;
-				this.render_popup_question();
+			if (state.index > 0) {
+				state.index--;
+				this.render_popup_question(session_id);
 			}
 		});
 
 		this.chat.popup_container.find('.btn-next').on('click', (e) => {
 			e.preventDefault();
-			if (this.clarification_index < this.clarification_questions.length - 1) {
-				this.clarification_index++;
-				this.render_popup_question();
+			if (state.index < state.questions.length - 1) {
+				state.index++;
+				this.render_popup_question(session_id);
 			}
 		});
 
 		this.chat.popup_container.find('.clarification-row-option:not(.custom-option-row)').on('click', function(e) {
 			e.preventDefault();
 			let val = $(this).attr('data-value');
-			self.clarification_answers[q.id] = val;
+			state.answers[q.id] = val;
 			self.chat.popup_container.find('.clarification-row-option').removeClass('active');
 			$(this).addClass('active');
 			self.chat.popup_container.find('.clarification-popup-custom-input').hide().val('');
@@ -295,39 +434,50 @@ class ChatMessageHandler {
 
 		this.chat.popup_container.find('.clarification-popup-custom-input').on('input', function() {
 			let val = $(this).val().trim();
-			self.clarification_answers[q.id] = val;
+			state.answers[q.id] = val;
 		});
 
 		this.chat.popup_container.find('.btn-skip').on('click', (e) => {
 			e.preventDefault();
-			self.clarification_answers[q.id] = '';
-			self.advance_or_submit();
+			state.answers[q.id] = '';
+			self.advance_or_submit(session_id);
 		});
 
 		this.chat.popup_container.find('.btn-continue').on('click', (e) => {
 			e.preventDefault();
-			self.advance_or_submit();
+			self.advance_or_submit(session_id);
 		});
 	}
 
-	advance_or_submit() {
-		if (this.clarification_index < this.clarification_questions.length - 1) {
-			this.clarification_index++;
-			this.render_popup_question();
+	advance_or_submit(session_id) {
+		let state = this.clarifications[session_id];
+		if (!state) return;
+
+		if (state.index < state.questions.length - 1) {
+			state.index++;
+			this.render_popup_question(session_id);
 		} else {
-			this.submit_clarification_popup();
+			this.submit_clarification_popup(session_id);
 		}
 	}
 
-	async submit_clarification_popup() {
+	async submit_clarification_popup(session_id) {
+		let state = this.clarifications[session_id];
+		if (!state) return;
+
 		let response_parts = [];
-		this.clarification_questions.forEach(q => {
-			let ans = this.clarification_answers[q.id] || '';
+		state.questions.forEach(q => {
+			let ans = state.answers[q.id] || '';
 			response_parts.push(`* **${q.question}**: ${ans}`);
 		});
 
 		let response_msg = `Clarification Response:\n${response_parts.join('\n')}`;
-		this.chat.popup_container.hide().empty();
+		
+		if (this.chat.session_manager.session_id === session_id) {
+			this.chat.popup_container.hide().empty();
+		}
+		
+		delete this.clarifications[session_id];
 		await this.send_chat_message(response_msg);
 	}
 }

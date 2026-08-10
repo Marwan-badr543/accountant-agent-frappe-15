@@ -45,11 +45,15 @@ class ChatSessionManager {
 		let list_container = $sidebar.find('.agent-chat-list').empty();
 
 		this.chats.forEach(chat => {
+			let is_streaming = this.chat.active_streams && this.chat.active_streams[chat.session_id];
+			let streaming_indicator = is_streaming ? `<span class="agent-sidebar-spinner"><i class="fa fa-spinner fa-spin" style="color: var(--chat-primary);"></i></span>` : '';
+
 			let chat_item = $(`
 				<div class="agent-chat-item ${chat.session_id === this.session_id ? 'active' : ''}" data-id="${chat.session_id}">
 					<div class="chat-item-title-wrapper">
 						<i class="fa fa-comment-o chat-icon"></i>
 						<span class="chat-title">${chat.title || __('New Chat')}</span>
+						${streaming_indicator}
 					</div>
 					<div class="chat-item-actions">
 						<button class="chat-action-btn rename-btn" title="${__('Rename')}">
@@ -81,6 +85,9 @@ class ChatSessionManager {
 	}
 
 	async select_chat(session_id) {
+		if (this.session_id) {
+			this.chat.message_handler.save_draft(this.session_id);
+		}
 		this.session_id = session_id;
 		this.is_new_chat_draft = false;
 
@@ -90,9 +97,52 @@ class ChatSessionManager {
 		}
 
 		await this.load_chat_history();
+
+		if (this.session_id === session_id) {
+			this.chat.message_handler.restore_draft(session_id);
+
+			// Rebuild active stream bubble if session is currently streaming
+			if (this.chat.active_streams && this.chat.active_streams[session_id]) {
+				let stream = this.chat.active_streams[session_id];
+				this.chat.ui_manager.create_stream_bubble(this.chat.msg_box, stream.bubble_id, session_id);
+				
+				if (stream.steps.length > 0 || stream.status) {
+					this.chat.ui_manager.update_stream_status(this.chat.msg_box, stream.bubble_id, stream.status, stream.steps);
+				}
+				if (stream.reasoning) {
+					this.chat.ui_manager.update_stream_reasoning(this.chat.msg_box, stream.bubble_id, stream.reasoning);
+				}
+				if (stream.accumulated) {
+					this.chat.ui_manager.update_stream_bubble(this.chat.msg_box, stream.bubble_id, stream.accumulated);
+				}
+				this.chat.ui_manager.update_thinking_duration(this.chat.msg_box, stream.bubble_id, stream.elapsed_seconds);
+
+				// Expand accordion body for active stream
+				let row = this.chat.msg_box.find(`#row-${stream.bubble_id}`);
+				row.find('.thinking-body-content').show();
+				row.find('.thinking-header-icon').css('transform', 'rotate(90deg)');
+
+				this.chat.message_handler.set_button_state('cancel');
+			} else if (this.chat.message_handler.processing_sessions.has(session_id)) {
+				this.chat.message_handler.set_button_state('cancel');
+			} else {
+				this.chat.message_handler.set_button_state('send');
+			}
+
+			this.chat.ui_manager.force_scroll_to_bottom(this.chat.msg_box);
+
+			if (this.chat.message_handler.clarifications[session_id]) {
+				this.chat.message_handler.render_popup_question(session_id);
+			} else {
+				this.chat.popup_container.hide().empty();
+			}
+		}
 	}
 
 	set_new_chat_draft() {
+		if (this.session_id) {
+			this.chat.message_handler.save_draft(this.session_id);
+		}
 		this.chat.ui_manager.clear_typing_timers();
 		this.is_new_chat_draft = true;
 		this.session_id = this.chat.generate_uuid();
@@ -102,6 +152,9 @@ class ChatSessionManager {
 		}
 
 		this.chat.ui_manager.render_welcome(this.chat.msg_box);
+		this.chat.message_handler.restore_draft(this.session_id);
+		this.chat.message_handler.set_button_state('send');
+		this.chat.popup_container.hide().empty();
 	}
 
 	rename_chat(session_id, current_title) {
