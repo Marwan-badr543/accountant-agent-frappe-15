@@ -1,9 +1,17 @@
-import requests
 import frappe
+import requests
 from frappe import _
 from frappe.model.document import Document
 
-AGENT_SERVER_URL = "http://127.0.0.1:4000"
+
+def get_agent_server_url() -> str:
+	"""Reads the agent server base URL from site_config.json (key: agent_server_url).
+
+	Falls back to the local-dev default only when the site has no explicit
+	configuration, so a misconfigured production site fails loudly at request
+	time instead of silently pointing at an unreachable localhost.
+	"""
+	return (frappe.conf.get("agent_server_url") or "http://127.0.0.1:4000").rstrip("/")
 
 
 def decode_jwt_payload(token: str) -> dict:
@@ -13,6 +21,7 @@ def decode_jwt_payload(token: str) -> dict:
 	"""
 	import base64
 	import json
+
 	try:
 		parts = token.split(".")
 		if len(parts) == 3:
@@ -22,7 +31,7 @@ def decode_jwt_payload(token: str) -> dict:
 			payload_json = base64.urlsafe_b64decode(payload_b64).decode("utf-8")
 			return json.loads(payload_json)
 	except Exception as e:
-		frappe.log_error(f"JWT decode error: {str(e)}", "Accountant Agent JWT Decode")
+		frappe.log_error(title="Accountant Agent JWT Decode", message=f"JWT decode error: {e!s}")
 	return {}
 
 
@@ -69,15 +78,14 @@ def get_user_usage(email):
 		return {"daily_usage_percentage": 0.0, "total_usage_percentage": 0.0}
 
 	try:
-		response = requests.get(f"{AGENT_SERVER_URL}/users/{user_id}/usage", timeout=10)
+		response = requests.get(f"{get_agent_server_url()}/users/{user_id}/usage", timeout=10)
 		if response.status_code == 200:
 			data = response.json()
 			return {
 				"daily_usage_percentage": round(data.get("daily_usage_percentage", 0.0), 1),
-				"total_usage_percentage": round(data.get("total_usage_percentage", 0.0), 1)
+				"total_usage_percentage": round(data.get("total_usage_percentage", 0.0), 1),
 			}
 	except Exception as e:
-		frappe.log_error(f"Error fetching user usage: {str(e)}", "Accountant Agent Usage Fetch")
+		frappe.log_error(title="Accountant Agent Usage Fetch", message=f"Error fetching user usage: {e!s}")
 
 	return {"daily_usage_percentage": 0.0, "total_usage_percentage": 0.0}
-

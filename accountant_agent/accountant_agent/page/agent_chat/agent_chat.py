@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -6,14 +5,15 @@ import base64
 import json
 import os
 import uuid
-import requests
+
 import frappe
+import requests
 from frappe import _
 
-AGENT_SERVER_URL = "http://127.0.0.1:4000"
-
+from accountant_agent.accountant_agent.doctype.agent_settings.agent_settings import get_agent_server_url
 
 # ---------------- JWT Helpers ----------------
+
 
 def decode_jwt_payload(token: str) -> dict:
 	"""
@@ -29,11 +29,12 @@ def decode_jwt_payload(token: str) -> dict:
 			payload_json = base64.urlsafe_b64decode(payload_b64).decode("utf-8")
 			return json.loads(payload_json)
 	except Exception as e:
-		frappe.log_error(f"JWT decode error: {str(e)}", "Accountant Agent JWT Decode")
+		frappe.log_error(title="Accountant Agent JWT Decode", message=f"JWT decode error: {e!s}")
 	return {}
 
 
 # ---------------- Server Communication Helpers ----------------
+
 
 def register_agent_on_server(email: str, password: str, company_name: str, api_key: str) -> None:
 	"""Sends a user registration POST request to the remote agent server."""
@@ -42,52 +43,50 @@ def register_agent_on_server(email: str, password: str, company_name: str, api_k
 		"name": company_name,
 		"username": email,
 		"password": password,
-		"company_url": frappe.utils.get_url()
+		"company_url": frappe.utils.get_url(),
 	}
 	try:
-		response = requests.post(f"{AGENT_SERVER_URL}/users/", json=payload, timeout=15)
+		response = requests.post(f"{get_agent_server_url()}/users/", json=payload, timeout=15)
 		if response.status_code != 201:
 			error_msg = response.json().get("detail", "Registration failed.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
 	except requests.exceptions.RequestException as e:
-		frappe.log_error(f"Agent registration request error: {str(e)}", "Accountant Agent Auth")
+		frappe.log_error(title="Accountant Agent Auth", message=f"Agent registration request error: {e!s}")
 		frappe.throw(_("Could not connect to Agent Server. Please make sure the server is running."))
 
 
 def login_agent_on_server(email: str, password: str) -> str:
 	"""Logs in to the agent server and returns the access token."""
-	login_payload = {
-		"username": email,
-		"password": password
-	}
+	login_payload = {"username": email, "password": password}
 	try:
-		response = requests.post(f"{AGENT_SERVER_URL}/auth/login", json=login_payload, timeout=15)
+		response = requests.post(f"{get_agent_server_url()}/auth/login", json=login_payload, timeout=15)
 		if response.status_code != 200:
 			error_msg = response.json().get("detail", "Login failed. Check your email and password.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
-		
+
 		token_data = response.json()
 		return token_data.get("access_token")
 	except requests.exceptions.RequestException as e:
-		frappe.log_error(f"Agent login request error: {str(e)}", "Accountant Agent Auth")
+		frappe.log_error(title="Accountant Agent Auth", message=f"Agent login request error: {e!s}")
 		frappe.throw(_("Could not connect to Agent Server. Please make sure the server is running."))
 
 
 def refresh_agent_token_on_server(access_token: str) -> str:
 	"""Calls the agent server token refresh endpoint and returns the new access token."""
-	refresh_payload = {
-		"access_token": access_token
-	}
+	refresh_payload = {"access_token": access_token}
 	try:
-		response = requests.post(f"{AGENT_SERVER_URL}/auth/refresh", json=refresh_payload, timeout=15)
+		response = requests.post(f"{get_agent_server_url()}/auth/refresh", json=refresh_payload, timeout=15)
 		if response.status_code == 200:
 			return response.json().get("access_token")
 	except Exception as e:
-		frappe.log_error(f"Agent token refresh request error: {str(e)}", "Accountant Agent Refresh")
+		frappe.log_error(
+			title="Accountant Agent Refresh", message=f"Agent token refresh request error: {e!s}"
+		)
 	return None
 
 
 # ---------------- Database Connection Helpers ----------------
+
 
 def get_agent_settings_doc(email: str):
 	"""Finds and returns the Agent Settings document matching the given email, or None."""
@@ -99,7 +98,7 @@ def get_agent_settings_doc(email: str):
 	return None
 
 
-def save_agent_settings(email: str, api_key: str = None, access_token: str = None) -> None:
+def save_agent_settings(email: str, api_key: str | None = None, access_token: str | None = None) -> None:
 	"""Creates or updates the Agent Settings record for the given agent email."""
 	try:
 		doc = get_agent_settings_doc(email)
@@ -112,33 +111,43 @@ def save_agent_settings(email: str, api_key: str = None, access_token: str = Non
 		else:
 			if not api_key:
 				frappe.throw(_("API Key is required to create new Agent Settings."))
-			doc = frappe.get_doc({
-				"doctype": "Agent Settings",
-				"email": email,
-				"api_key": api_key,
-				"access_token": access_token or ""
-			})
+			doc = frappe.get_doc(
+				{
+					"doctype": "Agent Settings",
+					"email": email,
+					"api_key": api_key,
+					"access_token": access_token or "",
+				}
+			)
 			doc.insert(ignore_permissions=True)
 		frappe.db.commit()
 	except Exception as e:
-		frappe.log_error(f"Error saving Agent Settings: {str(e)}", "Accountant Agent Save Settings")
-		frappe.throw(_(f"Failed to save credentials locally: {str(e)}"))
+		frappe.log_error(
+			title="Accountant Agent Save Settings", message=f"Error saving Agent Settings: {e!s}"
+		)
+		frappe.throw(_(f"Failed to save credentials locally: {e!s}"))
 
 
 def save_chat_history(session_id: str, sender: str, content: str) -> None:
 	"""Saves a message in the Agent Chat History."""
 	try:
-		doc = frappe.get_doc({
-			"doctype": "Agent Chat History",
-			"creation1": frappe.utils.now_datetime(),
-			"session_id": session_id,
-			"sender": sender,
-			"content": content
-		})
+		doc = frappe.get_doc(
+			{
+				"doctype": "Agent Chat History",
+				"creation1": frappe.utils.now_datetime(),
+				"session_id": session_id,
+				"sender": sender,
+				"content": content,
+			}
+		)
 		doc.insert(ignore_permissions=True)
 		frappe.db.commit()
 	except Exception as e:
-		frappe.log_error(f"Error saving user message to history: {str(e)}", "Accountant Agent Chat")
+		frappe.log_error(
+			title="Accountant Agent Chat", message=f"Error saving user message to history: {e!s}"
+		)
+
+
 def get_history_payload(session_id: str) -> list:
 	"""Retrieves the last 10 messages to build chat history context, formatting JSON structures cleanly."""
 	history_records = frappe.get_all(
@@ -146,9 +155,9 @@ def get_history_payload(session_id: str) -> list:
 		filters={"session_id": session_id},
 		fields=["sender", "content", "creation"],
 		order_by="creation desc",
-		limit=30
+		limit=30,
 	)
-	
+
 	payload = []
 	for rec in history_records:
 		content = rec.content or ""
@@ -158,7 +167,9 @@ def get_history_payload(session_id: str) -> list:
 				data = json.loads(content)
 				plan_text = data.get("plan", "")
 				status = data.get("status", "pending")
-				content = f"Proposed Analysis Plan:\n{plan_text}\n\nUser Confirmation Status: {status.capitalize()}"
+				content = (
+					f"Proposed Analysis Plan:\n{plan_text}\n\nUser Confirmation Status: {status.capitalize()}"
+				)
 			except Exception:
 				pass
 		# Format clarification json if present
@@ -175,24 +186,23 @@ def get_history_payload(session_id: str) -> list:
 			except Exception:
 				pass
 
-		payload.append({
-			"role": "user" if rec.sender == "human" else "assistant",
-			"content": content
-		})
-		
+		payload.append({"role": "user" if rec.sender == "human" else "assistant", "content": content})
+
 	# Slice the last 10 messages (or fewer if not available)
 	payload = payload[:10]
 	# Reverse to restore chronological order (oldest first)
 	payload.reverse()
 	return payload
+
+
 def post_message_to_agent(
 	message: str,
 	history: list,
 	token: str,
-	custom_instructions: str = None,
-	session_id: str = None,
+	custom_instructions: str | None = None,
+	session_id: str | None = None,
 	agent_type: str = "ask",
-	file_urls: list = None,
+	file_urls: list | None = None,
 ) -> requests.Response:
 	"""Sends message to the agent server ask API, with optional attached files and agent_type."""
 	headers = {
@@ -222,12 +232,14 @@ def post_message_to_agent(
 					f_obj = open(file_path, "rb")
 					opened_files.append(f_obj)
 					# Strip unique hex prefix if present for original filename
-					clean_filename = filename[13:] if (len(filename) > 13 and filename[12] == '_') else filename
+					clean_filename = (
+						filename[13:] if (len(filename) > 13 and filename[12] == "_") else filename
+					)
 					files_list.append(("files", (clean_filename, f_obj)))
 
 		# Route request directly to specific endpoint based on agent_type
 		agent_endpoint = agent_type if agent_type in ("ask", "analyse", "audit") else "ask"
-		endpoint_url = f"{AGENT_SERVER_URL}/agent/{agent_endpoint}"
+		endpoint_url = f"{get_agent_server_url()}/agent/{agent_endpoint}"
 
 		return requests.post(
 			endpoint_url,
@@ -244,7 +256,6 @@ def post_message_to_agent(
 				pass
 
 
-
 def update_chat_timestamp(session_id: str) -> None:
 	"""Updates last_update timestamp of the chat session."""
 	if session_id and frappe.db.exists("Agent Chats", session_id):
@@ -254,13 +265,14 @@ def update_chat_timestamp(session_id: str) -> None:
 
 # ---------------- Whitelisted Page Methods ----------------
 
+
 @frappe.whitelist()
 def get_connection_status(agent_email=None):
 	"""Checks if connection status settings are present for the given email."""
 	user = frappe.session.user
 	if user == "Guest" or not agent_email:
 		return {"connected": False, "email": None}
-	
+
 	try:
 		doc = get_agent_settings_doc(agent_email)
 		if doc:
@@ -268,8 +280,8 @@ def get_connection_status(agent_email=None):
 			if token:
 				return {"connected": True, "email": doc.email}
 	except Exception as e:
-		frappe.log_error(f"Error checking connection status: {str(e)}", "Accountant Agent Connect")
-	
+		frappe.log_error(title="Accountant Agent Connect", message=f"Error checking connection status: {e!s}")
+
 	return {"connected": False, "email": None}
 
 
@@ -279,23 +291,23 @@ def authenticate_agent(mode, email, password, company_name=None):
 	user = frappe.session.user
 	if user == "Guest":
 		frappe.throw(_("Please log in to ERPNext first."))
-	
+
 	if not email or not password:
 		frappe.throw(_("Email and password are required."))
-		
+
 	if mode == "signup":
 		if not company_name:
 			frappe.throw(_("Company Name is required for registration."))
-		
+
 		# Generate new API key UUID
 		api_key_uuid = str(uuid.uuid4())
-		
+
 		if get_agent_settings_doc(email):
 			frappe.throw(_(f"Agent Settings record already exists for {email}."))
-			
+
 		# Store email & key local first
 		save_agent_settings(email, api_key=api_key_uuid)
-		
+
 		# Create the user on server
 		try:
 			register_agent_on_server(email, password, company_name, api_key_uuid)
@@ -306,31 +318,27 @@ def authenticate_agent(mode, email, password, company_name=None):
 				frappe.delete_doc("Agent Settings", doc.name, ignore_permissions=True)
 				frappe.db.commit()
 			raise e
-		
+
 		# Automatically login to acquire token
 		access_token = login_agent_on_server(email, password)
 		save_agent_settings(email, access_token=access_token)
-		
+
 	elif mode == "login":
 		# Authenticate with agent server
 		access_token = login_agent_on_server(email, password)
-		
+
 		# Check if local record exists (must exist as requested by user)
 		if not get_agent_settings_doc(email):
 			frappe.throw(_("Agent settings not found for this email. Please sign up first."))
-			
+
 		save_agent_settings(email, access_token=access_token)
-		
+
 	else:
 		frappe.throw(_("Invalid mode specified."))
 
 	# Retrieve the API key to return to client
 	doc = get_agent_settings_doc(email)
-	return {
-		"success": True,
-		"email": email,
-		"api_key": doc.get_password("api_key")
-	}
+	return {"success": True, "email": email, "api_key": doc.get_password("api_key")}
 
 
 def get_latest_plan_message(session_id: str, lock: bool = False):
@@ -340,7 +348,7 @@ def get_latest_plan_message(session_id: str, lock: bool = False):
 		filters={"session_id": session_id},
 		fields=["name", "content"],
 		order_by="creation desc",
-		limit=20
+		limit=20,
 	)
 	for msg in messages:
 		if msg.content and msg.content.startswith('{"type": "plan"'):
@@ -348,13 +356,15 @@ def get_latest_plan_message(session_id: str, lock: bool = False):
 				try:
 					# Apply row-level lock using FOR UPDATE with appropriate error handling
 					frappe.db.sql(
-						"select name from `tabAgent Chat History` where name=%s for update",
-						msg.name
+						"select name from `tabAgent Chat History` where name=%s for update", msg.name
 					)
 					# Return fresh doc after lock is acquired
 					return frappe.get_doc("Agent Chat History", msg.name)
 				except Exception as e:
-					frappe.log_error(f"Database lock timeout or error: {str(e)}", "Accountant Agent Plan Lock")
+					frappe.log_error(
+						title="Accountant Agent Plan Lock",
+						message=f"Database lock timeout or error: {e!s}",
+					)
 					frappe.throw(_("Could not acquire lock on the plan record. Please try again."))
 			return msg
 	return None
@@ -366,11 +376,11 @@ def send_message(message, session_id, agent_email, agent_type="ask", file_urls=N
 	user = frappe.session.user
 	if user == "Guest":
 		frappe.throw(_("Not authenticated with ERPNext."))
-		
+
 	doc = get_agent_settings_doc(agent_email)
 	if not doc:
 		frappe.throw(_("Not authenticated with Accountant Agent."))
-		
+
 	access_token = doc.get_password("access_token")
 	if not access_token:
 		frappe.throw(_("Missing access token. Please re-authenticate."))
@@ -392,7 +402,10 @@ def send_message(message, session_id, agent_email, agent_type="ask", file_urls=N
 				latest_plan.save(ignore_permissions=True)
 				frappe.db.commit()
 		except Exception as e:
-			frappe.log_error(f"Error updating plan status JSON: {str(e)}", "Accountant Agent Plan Status Update")
+			frappe.log_error(
+				title="Accountant Agent Plan Status Update",
+				message=f"Error updating plan status JSON: {e!s}",
+			)
 
 	# Save user message to client DB if not "Approve" and not a clarification response
 	if message != "Approve" and not message.startswith("Clarification Response:"):
@@ -429,7 +442,7 @@ def process_agent_message_background(
 	doc = get_agent_settings_doc(agent_email)
 	if not doc:
 		error_msg = f"Agent Settings not found for {agent_email}."
-		frappe.log_error(error_msg, "Accountant Agent Stream")
+		frappe.log_error(title="Accountant Agent Stream", message=error_msg)
 		frappe.publish_realtime(
 			event="agent_message_error",
 			message={"session_id": session_id, "error": error_msg},
@@ -477,11 +490,13 @@ def process_agent_message_background(
 				if os.path.exists(file_path):
 					f_obj = open(file_path, "rb")
 					opened_files.append(f_obj)
-					clean_filename = filename[13:] if (len(filename) > 13 and filename[12] == '_') else filename
+					clean_filename = (
+						filename[13:] if (len(filename) > 13 and filename[12] == "_") else filename
+					)
 					files_list.append(("files", (clean_filename, f_obj)))
 
 		agent_endpoint = agent_type if agent_type in ("ask", "analyse", "audit") else "ask"
-		endpoint_url = f"{AGENT_SERVER_URL}/agent/{agent_endpoint}"
+		endpoint_url = f"{get_agent_server_url()}/agent/{agent_endpoint}"
 
 		response = requests.post(
 			endpoint_url,
@@ -497,11 +512,11 @@ def process_agent_message_background(
 			if new_access_token:
 				save_agent_settings(agent_email, access_token=new_access_token)
 				headers["Authorization"] = f"Bearer {new_access_token}"
-				
+
 				# Re-open/reset files
 				for f in opened_files:
 					f.seek(0)
-					
+
 				response = requests.post(
 					endpoint_url,
 					data=payload_data,
@@ -564,7 +579,11 @@ def process_agent_message_background(
 				elif current_event == "tool_start":
 					frappe.publish_realtime(
 						event="agent_tool_start",
-						message={"session_id": session_id, "tool": data_json.get("tool", ""), "input": data_json.get("input", {})},
+						message={
+							"session_id": session_id,
+							"tool": data_json.get("tool", ""),
+							"input": data_json.get("input", {}),
+						},
 						user=user,
 					)
 				elif current_event == "done":
@@ -582,7 +601,10 @@ def process_agent_message_background(
 
 	except Exception as e:
 		error_msg = str(e)
-		frappe.log_error(f"Error processing agent message in background: {error_msg}", "Accountant Agent Chat Background")
+		frappe.log_error(
+			title="Accountant Agent Chat Background",
+			message=f"Error processing agent message in background: {error_msg}",
+		)
 		frappe.publish_realtime(
 			event="agent_message_error",
 			message={"session_id": session_id, "error": error_msg},
@@ -596,53 +618,51 @@ def process_agent_message_background(
 				pass
 
 
-
 @frappe.whitelist()
 def cancel_agent(session_id, agent_email):
 	"""Proxy cancellation request to the agent server."""
 	user = frappe.session.user
 	if user == "Guest":
 		frappe.throw(_("Not authenticated with ERPNext."))
-		
+
 	doc = get_agent_settings_doc(agent_email)
 	if not doc:
 		frappe.throw(_("Not authenticated with Accountant Agent."))
-		
+
 	access_token = doc.get_password("access_token")
-	
+
 	if not access_token:
 		frappe.throw(_("Missing access token. Please re-authenticate."))
 
-	headers = {
-		"Authorization": f"Bearer {access_token}",
-		"Content-Type": "application/json"
-	}
-	payload = {
-		"session_id": session_id
-	}
+	headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+	payload = {"session_id": session_id}
 	try:
-		response = requests.post(f"{AGENT_SERVER_URL}/agent/cancel", json=payload, headers=headers, timeout=15)
-		
+		response = requests.post(
+			f"{get_agent_server_url()}/agent/cancel", json=payload, headers=headers, timeout=15
+		)
+
 		# Handle expired token (401)
 		if response.status_code == 401:
 			new_access_token = refresh_agent_token_on_server(access_token)
 			if new_access_token:
 				save_agent_settings(agent_email, access_token=new_access_token)
 				headers["Authorization"] = f"Bearer {new_access_token}"
-				response = requests.post(f"{AGENT_SERVER_URL}/agent/cancel", json=payload, headers=headers, timeout=15)
+				response = requests.post(
+					f"{get_agent_server_url()}/agent/cancel", json=payload, headers=headers, timeout=15
+				)
 			else:
 				# Clear invalid token to force re-login
 				save_agent_settings(agent_email, access_token="")
 				frappe.throw(_("Session expired. Please reconnect."))
-				
+
 		if response.status_code != 200:
 			error_msg = response.json().get("detail", "Error from Agent Server.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
-			
+
 		return {"success": True, "message": response.json().get("message")}
-		
+
 	except requests.exceptions.RequestException as e:
-		frappe.log_error(f"Agent cancel request exception: {str(e)}", "Accountant Agent Cancel")
+		frappe.log_error(title="Accountant Agent Cancel", message=f"Agent cancel request exception: {e!s}")
 		frappe.throw(_("Unable to communicate with Agent Server. Please check if it's running."))
 
 
@@ -651,12 +671,12 @@ def get_chat_history(session_id):
 	"""Retrieves chat history messages for a specific session."""
 	if not session_id:
 		return []
-	
+
 	return frappe.get_all(
 		"Agent Chat History",
 		filters={"session_id": session_id},
 		fields=["name", "sender", "content", "creation1", "creation"],
-		order_by="creation asc"
+		order_by="creation asc",
 	)
 
 
@@ -665,13 +685,16 @@ def disconnect_agent(agent_email):
 	"""Disconnects the agent for the given email by clearing the access token locally."""
 	if not agent_email:
 		return {"success": False}
-		
+
 	user = frappe.session.user
 	if user != "Guest":
 		doc = get_agent_settings_doc(agent_email)
 		if doc:
 			# Directly delete the token from the __Auth table as Frappe's save ignores empty password fields
-			frappe.db.sql("delete from `__Auth` where `doctype`='Agent Settings' and `name`=%s and `fieldname`='access_token'", doc.name)
+			frappe.db.sql(
+				"delete from `__Auth` where `doctype`='Agent Settings' and `name`=%s and `fieldname`='access_token'",
+				doc.name,
+			)
 			frappe.db.set_value("Agent Settings", doc.name, "access_token", "")
 			frappe.db.commit()
 			return {"success": True}
@@ -683,7 +706,7 @@ def delete_agent_account(agent_email):
 	"""Deletes the agent account on the agent server, then deletes the local settings document."""
 	if not agent_email:
 		return {"success": False}
-		
+
 	user = frappe.session.user
 	if user != "Guest":
 		doc = get_agent_settings_doc(agent_email)
@@ -700,14 +723,17 @@ def delete_agent_account(agent_email):
 
 			if user_id:
 				try:
-					response = requests.delete(f"{AGENT_SERVER_URL}/users/{user_id}", timeout=15)
+					response = requests.delete(f"{get_agent_server_url()}/users/{user_id}", timeout=15)
 					if response.status_code not in (200, 404):
 						error_msg = response.json().get("detail", "Failed to delete account on Agent Server.")
 						frappe.throw(_(f"Agent Server Error: {error_msg}"))
 				except requests.exceptions.RequestException as e:
-					frappe.log_error(f"Agent account deletion request error: {str(e)}", "Accountant Agent Delete Account")
+					frappe.log_error(
+						title="Accountant Agent Delete Account",
+						message=f"Agent account deletion request error: {e!s}",
+					)
 					frappe.throw(_("Could not connect to Agent Server to delete account. Please try again."))
-			
+
 			frappe.delete_doc("Agent Settings", doc.name, ignore_permissions=True)
 			frappe.db.commit()
 			return {"success": True}
@@ -716,18 +742,19 @@ def delete_agent_account(agent_email):
 
 # ---------------- Chat Session Management Endpoints ----------------
 
+
 @frappe.whitelist()
 def get_chats():
 	"""Retrieves all chat sessions owned by the logged-in user."""
 	user = frappe.session.user
 	if user == "Guest":
 		return []
-		
+
 	return frappe.get_all(
 		"Agent Chats",
 		filters={"owner": user},
 		fields=["name", "session_id", "title", "last_update", "creation"],
-		order_by="last_update desc, creation desc"
+		order_by="last_update desc, creation desc",
 	)
 
 
@@ -737,23 +764,25 @@ def create_chat(title=None):
 	user = frappe.session.user
 	if user == "Guest":
 		frappe.throw(_("Please log in to ERPNext first."))
-		
+
 	session_id = str(uuid.uuid4())
-	
-	doc = frappe.get_doc({
-		"doctype": "Agent Chats",
-		"session_id": session_id,
-		"title": title or _("New Chat"),
-		"last_update": frappe.utils.now_datetime()
-	})
+
+	doc = frappe.get_doc(
+		{
+			"doctype": "Agent Chats",
+			"session_id": session_id,
+			"title": title or _("New Chat"),
+			"last_update": frappe.utils.now_datetime(),
+		}
+	)
 	doc.insert(ignore_permissions=True)
 	frappe.db.commit()
-	
+
 	return {
 		"name": doc.name,
 		"session_id": doc.session_id,
 		"title": doc.title,
-		"last_update": doc.last_update
+		"last_update": doc.last_update,
 	}
 
 
@@ -762,24 +791,24 @@ def update_chat_title(session_id, title):
 	"""Updates the title of a chat session."""
 	if not session_id or not title:
 		frappe.throw(_("Session ID and Title are required."))
-		
+
 	if not frappe.db.exists("Agent Chats", session_id):
 		frappe.throw(_("Chat session not found."))
-		
+
 	doc = frappe.get_doc("Agent Chats", session_id)
 	if doc.owner != frappe.session.user:
 		frappe.throw(_("Not authorized to rename this chat."))
-		
+
 	doc.title = title
 	doc.last_update = frappe.utils.now_datetime()
 	doc.save(ignore_permissions=True)
 	frappe.db.commit()
-	
+
 	return {
 		"name": doc.name,
 		"session_id": doc.session_id,
 		"title": doc.title,
-		"last_update": doc.last_update
+		"last_update": doc.last_update,
 	}
 
 
@@ -788,17 +817,17 @@ def delete_chat(session_id):
 	"""Deletes a chat session (cascade deletion of messages is handled by the before_delete hook)."""
 	if not session_id:
 		return {"success": False}
-		
+
 	if not frappe.db.exists("Agent Chats", session_id):
 		return {"success": False}
-		
+
 	doc = frappe.get_doc("Agent Chats", session_id)
 	if doc.owner != frappe.session.user:
 		frappe.throw(_("Not authorized to delete this chat."))
-		
+
 	frappe.delete_doc("Agent Chats", session_id, ignore_permissions=True)
 	frappe.db.commit()
-	
+
 	return {"success": True}
 
 
@@ -808,31 +837,34 @@ def create_chat_with_id(session_id, title=None):
 	user = frappe.session.user
 	if user == "Guest":
 		frappe.throw(_("Please log in to ERPNext first."))
-		
+
 	if not session_id:
 		frappe.throw(_("Session ID is required."))
-		
+
 	if frappe.db.exists("Agent Chats", session_id):
 		frappe.throw(_("Chat session already exists."))
-		
-	doc = frappe.get_doc({
-		"doctype": "Agent Chats",
-		"session_id": session_id,
-		"title": title or _("New Chat"),
-		"last_update": frappe.utils.now_datetime()
-	})
+
+	doc = frappe.get_doc(
+		{
+			"doctype": "Agent Chats",
+			"session_id": session_id,
+			"title": title or _("New Chat"),
+			"last_update": frappe.utils.now_datetime(),
+		}
+	)
 	doc.insert(ignore_permissions=True)
 	frappe.db.commit()
-	
+
 	return {
 		"name": doc.name,
 		"session_id": doc.session_id,
 		"title": doc.title,
-		"last_update": doc.last_update
+		"last_update": doc.last_update,
 	}
 
 
 # ─── Utility Helpers ────────────────────────────────────────────────────────
+
 
 def _parse_json_list(value) -> list | None:
 	"""Safely parse a JSON string into a list. Returns None if empty or invalid."""
@@ -854,8 +886,20 @@ def _parse_json_list(value) -> list | None:
 AGENT_UPLOAD_DIR = "agent_uploads"
 MAX_UPLOAD_SIZE_BYTES: int = 20 * 1024 * 1024  # 20 MB endpoint cap to support Excel uploads
 ALLOWED_ACCOUNTANT_EXTENSIONS: set = {
-	".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".txt",
-	".pptx", ".ppt", ".png", ".jpg", ".jpeg", ".gif", ".webp"
+	".pdf",
+	".docx",
+	".doc",
+	".xlsx",
+	".xls",
+	".csv",
+	".txt",
+	".pptx",
+	".ppt",
+	".png",
+	".jpg",
+	".jpeg",
+	".gif",
+	".webp",
 }
 
 
@@ -886,7 +930,9 @@ def upload_agent_file():
 	ext = os.path.splitext(filename.lower())[1]
 	if ext not in ALLOWED_ACCOUNTANT_EXTENSIONS:
 		frappe.throw(
-			_(f"File type '{ext}' is not permitted for security reasons. Allowed types: {', '.join(sorted(ALLOWED_ACCOUNTANT_EXTENSIONS))}"),
+			_(
+				f"File type '{ext}' is not permitted for security reasons. Allowed types: {', '.join(sorted(ALLOWED_ACCOUNTANT_EXTENSIONS))}"
+			),
 			frappe.ValidationError,
 		)
 
@@ -897,7 +943,9 @@ def upload_agent_file():
 	if file_size > MAX_UPLOAD_SIZE_BYTES:
 		size_mb = file_size / (1024 * 1024)
 		frappe.throw(
-			_(f"File exceeds the maximum allowed size of 20 MB. Your file is {size_mb:.1f} MB. Please upload a smaller file."),
+			_(
+				f"File exceeds the maximum allowed size of 20 MB. Your file is {size_mb:.1f} MB. Please upload a smaller file."
+			),
 			frappe.ValidationError,
 		)
 
@@ -950,17 +998,16 @@ def download_file(file_url: str):
 	else:
 		file_path = frappe.get_site_path("public", "files", filename)
 
-	print(f"[DEBUG] download_file: file_url={file_url}, site={frappe.local.site}, file_path={file_path}, exists={os.path.exists(file_path)}")
-
 	if not os.path.exists(file_path):
 		frappe.throw(_("File not found."), frappe.DoesNotExistError)
 
 	# Guess mime type for correct browser rendering/inline preview
 	import mimetypes
-	content_type, _ = mimetypes.guess_type(file_path)
+
+	content_type, _encoding = mimetypes.guess_type(file_path)
 
 	frappe.local.response.filename = filename
-	
+
 	try:
 		with open(file_path, "rb") as f:
 			frappe.local.response.filecontent = f.read()
@@ -969,8 +1016,6 @@ def download_file(file_url: str):
 
 	frappe.local.response.type = "download"
 	frappe.local.response.display_content_as = "inline"
-	
+
 	if content_type:
 		frappe.local.response.content_type = content_type
-
-
