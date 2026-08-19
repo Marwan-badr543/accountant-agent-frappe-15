@@ -10,7 +10,16 @@
   "column_break_lpxe",
   "access_token",
   "section_break_ovmp",
-  "custom_instructions"
+  "custom_instructions",
+  "api_key_hash",
+  "section_break_write",
+  "write_setup_html",
+  "erp_connection_id",
+  "agent_erp_user",
+  "column_break_write",
+  "write_connected_on",
+  "write_recording_enabled",
+  "write_last_error"
  ],
  "fields": [
   {
@@ -34,7 +43,8 @@
    "in_list_view": 1,
    "label": "Email",
    "read_only": 1,
-   "reqd": 1
+   "reqd": 1,
+   "search_index": 1
   },
   {
    "fieldname": "column_break_lpxe",
@@ -49,12 +59,73 @@
    "fieldtype": "Long Text",
    "label": "Custom Instructions",
    "placeholder": "Define how the AI should act (e.g., act as a senior accountant...)"
+  },
+  {
+   "fieldname": "api_key_hash",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "API Key Fingerprint",
+   "length": 64,
+   "no_copy": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "section_break_write",
+   "fieldtype": "Section Break",
+   "label": "Creator Agent — Recording Access"
+  },
+  {
+   "fieldname": "write_setup_html",
+   "fieldtype": "HTML",
+   "label": "Setup"
+  },
+  {
+   "fieldname": "erp_connection_id",
+   "fieldtype": "Data",
+   "label": "Connection ID",
+   "read_only": 1,
+   "no_copy": 1,
+   "length": 64
+  },
+  {
+   "fieldname": "agent_erp_user",
+   "fieldtype": "Data",
+   "label": "Agent ERP User",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "column_break_write",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "write_connected_on",
+   "fieldtype": "Datetime",
+   "label": "Connected On",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "write_recording_enabled",
+   "fieldtype": "Check",
+   "label": "Recording Enabled",
+   "read_only": 1,
+   "no_copy": 1,
+   "default": "0"
+  },
+  {
+   "fieldname": "write_last_error",
+   "fieldtype": "Small Text",
+   "label": "Last Connection Problem",
+   "read_only": 1,
+   "no_copy": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-08-01 18:26:40.785623",
+ "modified": "2026-08-19 09:00:00.000000",
  "modified_by": "Administrator",
  "module": "Accountant Agent",
  "name": "Agent Settings",

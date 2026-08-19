@@ -111,7 +111,6 @@ class ChatMessageHandler {
 		let session_id = this.chat.session_manager.session_id;
 		if (!session_id) return;
 
-		message = frappe.utils.xss_sanitise(message);
 		let active_session_id = session_id;
 
 		// Handle unsaved draft
@@ -139,10 +138,15 @@ class ChatMessageHandler {
 			}
 		}
 
+		let sanitised_message = message;
+
 		if (this.chat.session_manager.session_id === active_session_id) {
 			if (message !== "Approve" && (!message.startsWith || !message.startsWith("Clarification Response:"))) {
 				this.chat.ui_manager.append_message(this.chat.msg_box, 'user', message, false, new Date().toISOString());
 			}
+
+			// Sanitise for backend storage and network requests
+			sanitised_message = frappe.utils.xss_sanitise(message);
 			
 			// Initialize the stream bubble immediately with "Thinking..." status
 			let stream_id = `stream-${this.chat.generate_uuid()}`;
@@ -171,7 +175,7 @@ class ChatMessageHandler {
 			let res = await frappe.xcall(
 				'accountant_agent.accountant_agent.page.agent_chat.agent_chat.send_message',
 				{
-					message: message,
+					message: sanitised_message,
 					session_id: active_session_id,
 					agent_email: agent_email,
 					agent_type: agent_type,
@@ -262,6 +266,7 @@ class ChatMessageHandler {
 			btn.prop('disabled', false).css('opacity', 1);
 			this.chat.textarea.prop('disabled', false);
 			this.chat.textarea.focus();
+			this.chat.textarea.trigger('input');
 		}
 	}
 

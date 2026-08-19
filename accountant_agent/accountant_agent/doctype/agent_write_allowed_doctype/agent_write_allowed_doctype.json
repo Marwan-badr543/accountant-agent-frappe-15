@@ -1,0 +1,88 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-08-18 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "document_type",
+  "allow_create",
+  "allow_submit",
+  "column_break_awad1",
+  "allow_cancel",
+  "allow_amend",
+  "auto_submit_ceiling_amount"
+ ],
+ "fields": [
+  {
+   "columns": 3,
+   "fieldname": "document_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Document Type",
+   "options": "DocType",
+   "reqd": 1
+  },
+  {
+   "columns": 1,
+   "default": "0",
+   "description": "Allow the agent to prepare drafts of this document type.",
+   "fieldname": "allow_create",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Allow Create"
+  },
+  {
+   "columns": 1,
+   "default": "0",
+   "description": "Allow the agent to post this document to the ledger. Leave off for draft-only.",
+   "fieldname": "allow_submit",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Allow Submit"
+  },
+  {
+   "fieldname": "column_break_awad1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "columns": 1,
+   "default": "0",
+   "fieldname": "allow_cancel",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Allow Cancel"
+  },
+  {
+   "columns": 1,
+   "default": "0",
+   "fieldname": "allow_amend",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Allow Amend"
+  },
+  {
+   "columns": 2,
+   "default": "0",
+   "description": "Maximum absolute document total the agent may submit without a fresh human approval. 0 means never auto-submit.",
+   "fieldname": "auto_submit_ceiling_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Auto-Submit Ceiling Amount"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-18 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Accountant Agent",
+ "name": "Agent Write Allowed Doctype",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

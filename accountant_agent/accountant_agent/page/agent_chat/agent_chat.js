@@ -211,7 +211,13 @@ class AccountantAgentChat {
 					"compile": __("Generating final business report & Mermaid charts..."),
 					"agent": __("Thinking...")
 				};
-				let display = node_display_names[data.node] || __("Processing...");
+				// The agent sends the words it wants shown, in the customer's
+				// language rather than the pipeline's. The table above names
+				// steps of a pipeline that has since been replaced, so without
+				// this every step of every run fell through to "Processing..."
+				// — one caption for a whole run, which reads as a hang. It is
+				// kept only as a fallback for an older agent server.
+				let display = data.label || node_display_names[data.node] || __("Processing...");
 				stream.status = display;
 
 				if (!stream.steps.some(s => s.name === display)) {
@@ -250,7 +256,10 @@ class AccountantAgentChat {
 					"get_excel_sheets": __("Reading sheets from Excel file..."),
 					"query_excel_sheet": __("Querying Excel sheet data...")
 				};
-				let display = tool_display_names[data.tool] || `${__("Running tool")}: ${data.tool}...`;
+				// Same source, same reason. The old fallback printed the
+				// internal name of the tool to the customer, which is exactly
+				// what project_rules.md §6 forbids.
+				let display = data.label || tool_display_names[data.tool] || __("Working on it...");
 				stream.status = display;
 
 				if (!stream.steps.some(s => s.name === display)) {

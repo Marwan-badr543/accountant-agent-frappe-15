@@ -82,8 +82,20 @@ required_apps = ["erpnext"]
 # Installation
 # ------------
 
+# Provisioning for the Accountant Agent's ERP identity.
+#
+# Both hooks point at the same idempotent routine on purpose: after_install
+# provisions a fresh site, after_migrate repairs a site that was installed
+# before this module existed or had the agent user removed. Every step is
+# get-or-create, so re-running changes nothing on a healthy site.
+#
+# What it creates: a permission-less "Accountant Agent" role, an agent User
+# holding only that role, and a disabled Agent Write Policy. The agent is
+# provisioned but completely inert until a System Manager enables it.
+after_install = "accountant_agent.install.after_install"
+after_migrate = "accountant_agent.install.after_migrate"
+
 # before_install = "accountant_agent.install.before_install"
-# after_install = "accountant_agent.install.after_install"
 
 # Uninstallation
 # ------------
@@ -148,23 +160,18 @@ required_apps = ["erpnext"]
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-# 	"all": [
-# 		"accountant_agent.tasks.all"
-# 	],
-# 	"daily": [
-# 		"accountant_agent.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"accountant_agent.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"accountant_agent.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"accountant_agent.tasks.monthly"
-# 	],
-# }
+scheduler_events = {
+	"hourly": [
+		"accountant_agent.agent_api.services.agent_api_service.cleanup_old_files"
+	],
+	"daily": [
+		# Alerts on Agent Write Log rows stuck IN_FLIGHT. These should be
+		# impossible - the reservation and its commit share one transaction - so
+		# a survivor is an invariant violation worth an error log, never a quiet
+		# cleanup that would destroy the only evidence of the bug.
+		"accountant_agent.agent_api.services.agent_write_service.alert_on_stranded_in_flight"
+	],
+}
 
 # Testing
 # -------

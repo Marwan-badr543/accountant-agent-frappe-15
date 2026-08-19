@@ -11,6 +11,12 @@ from accountant_agent.agent_api.routers.agent_api_router import (
 	execute_query,
 	get_doctype_schema,
 	request_clarification,
+	upload_generated_file,
 )
 
-__all__ = ["execute_query", "get_doctype_schema", "request_clarification"]
+__all__ = [
+	"execute_query",
+	"get_doctype_schema",
+	"request_clarification",
+	"upload_generated_file",
+]

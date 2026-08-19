@@ -1,0 +1,212 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-08-18 00:00:00.000000",
+ "description": "An append-only record of every write the Accountant Agent attempted against this system, including the ones that were refused. The unique idempotency key is what prevents a retried request from creating a duplicate document.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "identity_section",
+  "idempotency_key",
+  "action",
+  "status",
+  "column_break_awl1",
+  "target_doctype",
+  "target_docname",
+  "docstatus_written",
+  "actor_section",
+  "agent_user",
+  "approved_by",
+  "column_break_awl2",
+  "run_id",
+  "session_id",
+  "integrity_section",
+  "request_digest",
+  "column_break_awl3",
+  "amount_written",
+  "diagnostics_section",
+  "error_code",
+  "error_message",
+  "response_snapshot"
+ ],
+ "fields": [
+  {
+   "fieldname": "identity_section",
+   "fieldtype": "Section Break",
+   "label": "Identity"
+  },
+  {
+   "description": "Caller-generated key. The unique index on this field is the concurrency gate that makes retries safe.",
+   "fieldname": "idempotency_key",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Idempotency Key",
+   "length": 180,
+   "read_only": 1,
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "action",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Action",
+   "options": "create\nsubmit\ncancel\namend",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "IN_FLIGHT",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "IN_FLIGHT\nCOMMITTED\nFAILED",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_awl1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "target_doctype",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Target Document Type",
+   "options": "DocType",
+   "read_only": 1
+  },
+  {
+   "description": "Deliberately a Data field rather than a Dynamic Link: a link would register a dependency that could block the customer from deleting their own draft. The audit log must never obstruct the customer's control of their own records.",
+   "fieldname": "target_docname",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Target Document",
+   "read_only": 1
+  },
+  {
+   "fieldname": "docstatus_written",
+   "fieldtype": "Int",
+   "label": "Docstatus Written",
+   "read_only": 1
+  },
+  {
+   "fieldname": "actor_section",
+   "fieldtype": "Section Break",
+   "label": "Attribution"
+  },
+  {
+   "description": "Always the authenticated session user. Never accepted from the request payload.",
+   "fieldname": "agent_user",
+   "fieldtype": "Link",
+   "label": "Agent User",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "description": "The human who approved this write in the agent conversation. Where the agent both creates and submits, this is the compensating record for segregation of duties - the ERP actor field will show the agent for both.",
+   "fieldname": "approved_by",
+   "fieldtype": "Data",
+   "label": "Approved By",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_awl2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "run_id",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Run ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "session_id",
+   "fieldtype": "Data",
+   "label": "Session ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "integrity_section",
+   "fieldtype": "Section Break",
+   "label": "Integrity"
+  },
+  {
+   "description": "SHA-256 of the canonical request payload, so a replay can be proven identical to the original.",
+   "fieldname": "request_digest",
+   "fieldtype": "Data",
+   "label": "Request Digest",
+   "length": 64,
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_awl3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "amount_written",
+   "fieldtype": "Currency",
+   "label": "Amount Written",
+   "read_only": 1
+  },
+  {
+   "fieldname": "diagnostics_section",
+   "fieldtype": "Section Break",
+   "label": "Diagnostics"
+  },
+  {
+   "fieldname": "error_code",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Error Code",
+   "read_only": 1
+  },
+  {
+   "fieldname": "error_message",
+   "fieldtype": "Small Text",
+   "label": "Error Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "response_snapshot",
+   "fieldtype": "Long Text",
+   "label": "Response Snapshot",
+   "read_only": 1
+  }
+ ],
+ "in_create": 1,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-18 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Accountant Agent",
+ "name": "Agent Write Log",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "Accountant Agent",
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

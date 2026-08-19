@@ -21,6 +21,7 @@ from frappe import _
 from accountant_agent.agent_api.services.agent_api_service import (
 	AuthenticationRequiredError,
 	ClarificationProcessingError,
+	FileTooLargeError,
 	ForbiddenQueryError,
 	InvalidApiKeyError,
 	InvalidPayloadFormatError,
@@ -31,6 +32,7 @@ from accountant_agent.agent_api.services.agent_api_service import (
 	build_doctype_schema_summary,
 	process_clarification_request,
 	validate_and_execute_query,
+	save_generated_file,
 )
 
 
@@ -93,6 +95,10 @@ def execute_query(sql_query: str | None = None, api_key: str | None = None) -> d
 	except ForbiddenQueryError as exc:
 		return _set_error_response(400, exc.reason)
 	except QueryExecutionError as exc:
+		# The agent needs enough to correct its own SQL (a bad column name, a
+		# timeout), so the driver message is forwarded here by design — this
+		# endpoint's caller is the agent, never an end user, and the agent's
+		# own persona rules keep it off the customer's screen.
 		return _set_error_response(500, str(exc))
 
 
@@ -155,3 +161,48 @@ def request_clarification(
 		return _set_error_response(400, exc.detail)
 	except ClarificationProcessingError as exc:
 		return _set_error_response(500, exc.detail)
+
+
+@frappe.whitelist(allow_guest=True)
+def upload_generated_file(
+	session_id: str | None = None,
+	api_key: str | None = None,
+) -> dict:
+	"""
+	Whitelisted endpoint allowing the authenticated Agent to upload
+	generated report files directly into Frappe.
+	"""
+	resolved_api_key = _extract_api_key(api_key)
+	resolved_session_id = _extract_param(session_id, "session_id")
+
+	try:
+		settings_user = authenticate_by_api_key(resolved_api_key)
+		uploaded_file = frappe.request.files.get("file")
+		if not uploaded_file:
+			return _set_error_response(400, "No file uploaded.")
+
+		return save_generated_file(resolved_session_id, uploaded_file, settings_user)
+
+	except AuthenticationRequiredError:
+		return _set_error_response(401, "Missing API Key. Authentication required.")
+	except InvalidApiKeyError:
+		return _set_error_response(403, "Invalid API Key. Authentication failed.")
+	except MissingParameterError as exc:
+		return _set_error_response(400, f"Missing {exc.parameter_name} parameter.")
+	except ResourceNotFoundError as exc:
+		return _set_error_response(404, str(exc))
+	except FileTooLargeError as exc:
+		return _set_error_response(
+			413,
+			f"The generated report exceeds the {exc.limit_bytes // (1024 * 1024)} MB limit.",
+		)
+	except Exception:
+		# Never surface the raw exception: it carries site paths and storage
+		# details (project_rules.md §5, Zero Leakage). The detail goes to the
+		# Error Log, where an administrator can see it and a caller cannot.
+		frappe.log_error(
+			title="Agent API: generated file upload",
+			message=frappe.get_traceback(),
+		)
+		return _set_error_response(500, "The generated file could not be stored.")
+

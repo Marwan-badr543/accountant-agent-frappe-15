@@ -2,35 +2,109 @@
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
-import base64
+import hashlib
 import json
+import mimetypes
 import os
 import uuid
+from typing import Optional
+
 import requests
 import frappe
 from frappe import _
+from frappe.model.document import Document
 
-AGENT_SERVER_URL = "http://127.0.0.1:4000"
+from accountant_agent.accountant_agent.doctype.agent_settings.agent_settings import (
+	decode_jwt_payload,
+	get_agent_server_url,
+)
+
+#: Messages of a conversation sent to the agent server with each turn.
+#:
+#: Every turn previously replayed the ENTIRE session. A long-running
+#: reconciliation thread therefore grew a payload that was re-serialised,
+#: re-transmitted and re-tokenised on every message, until the request was
+#: megabytes of history to carry one sentence of question. project_rules.md §3
+#: names this directly: never pass unbounded context to the model.
+MAX_HISTORY_MESSAGES: int = 40
+
+#: Messages returned to the browser when a chat is opened. The UI pages older
+#: messages in on demand rather than materialising an unbounded conversation.
+MAX_HISTORY_PAGE_SIZE: int = 200
 
 
-# ---------------- JWT Helpers ----------------
+# ---------------- Ownership Guards ----------------
+#
+# `agent_email` and `session_id` both reach these endpoints from the browser —
+# `agent_email` out of localStorage (agent_chat.js), `session_id` as a plain
+# form field. Neither is a credential, so neither may be treated as one. Every
+# endpoint below resolves the record first and then proves the caller owns it.
 
-def decode_jwt_payload(token: str) -> dict:
+
+def _assert_signed_in() -> str:
+	"""The current ERP user, or a refusal if the caller is anonymous."""
+	user = frappe.session.user
+	if not user or user == "Guest":
+		frappe.throw(_("Please sign in to ERPNext first."), frappe.AuthenticationError)
+	return user
+
+
+def get_agent_settings_doc(email: str) -> Optional[Document]:
+	"""The CALLER'S OWN Agent Settings record for this email, or None.
+
+	Ownership is the check, not existence. Without it, any signed-in ERP user —
+	including a Website User with no accounting permission at all — could name a
+	colleague's agent account and drive it: spend their metered quota, run
+	queries against the ERP under their credentials, disconnect them, or delete
+	their account outright.
 	"""
-	Decodes the JWT token payload without validating the signature.
-	Returns the payload dictionary, or an empty dictionary if invalid.
+	if not email:
+		return None
+
+	record = frappe.db.get_value(
+		"Agent Settings", {"email": email}, ["name", "owner"], as_dict=True
+	)
+	if not record:
+		return None
+	if record.owner != frappe.session.user and frappe.session.user != "Administrator":
+		return None
+
+	return frappe.get_doc("Agent Settings", record.name)
+
+
+def assert_agent_account_is_connectable(email: str) -> None:
+	"""Refuse early, and legibly, when this agent account belongs to someone else.
+
+	Without this the flow fails twice over with two unhelpful messages: sign-in
+	reports "not found — please sign up", and the sign-up that follows is
+	refused as a duplicate. Neither says what is actually true, which is that
+	the account is already paired with a different ERPNext user.
 	"""
-	try:
-		parts = token.split(".")
-		if len(parts) == 3:
-			payload_b64 = parts[1]
-			# Add base64 padding
-			payload_b64 += "=" * ((4 - len(payload_b64) % 4) % 4)
-			payload_json = base64.urlsafe_b64decode(payload_b64).decode("utf-8")
-			return json.loads(payload_json)
-	except Exception as e:
-		frappe.log_error(f"JWT decode error: {str(e)}", "Accountant Agent JWT Decode")
-	return {}
+	owner = frappe.db.get_value("Agent Settings", {"email": email}, "owner")
+	if owner and owner != frappe.session.user and frappe.session.user != "Administrator":
+		frappe.throw(
+			_("The agent account {0} is already connected to a different ERPNext user. "
+			  "Ask a System Manager to remove that connection first.").format(email),
+			frappe.PermissionError,
+		)
+
+
+def assert_owns_session(session_id: str) -> None:
+	"""Refuse unless the caller owns this chat session.
+
+	A chat transcript holds uploaded bank statements, ERP query results and
+	audit findings. `session_id` arrives from the client, so an endpoint that
+	only checked that the session *exists* would hand any signed-in user any
+	other user's financial conversation.
+	"""
+	if not session_id:
+		frappe.throw(_("Session ID is required."), frappe.ValidationError)
+
+	owner = frappe.db.get_value("Agent Chats", session_id, "owner")
+	if not owner:
+		frappe.throw(_("Chat session not found."), frappe.DoesNotExistError)
+	if owner != frappe.session.user:
+		frappe.throw(_("You are not authorised to access this chat."), frappe.PermissionError)
 
 
 # ---------------- Server Communication Helpers ----------------
@@ -45,7 +119,7 @@ def register_agent_on_server(email: str, password: str, company_name: str, api_k
 		"company_url": frappe.utils.get_url()
 	}
 	try:
-		response = requests.post(f"{AGENT_SERVER_URL}/users/", json=payload, timeout=15)
+		response = requests.post(f"{get_agent_server_url()}/users/", json=payload, timeout=15)
 		if response.status_code != 201:
 			error_msg = response.json().get("detail", "Registration failed.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
@@ -61,7 +135,7 @@ def login_agent_on_server(email: str, password: str) -> str:
 		"password": password
 	}
 	try:
-		response = requests.post(f"{AGENT_SERVER_URL}/auth/login", json=login_payload, timeout=15)
+		response = requests.post(f"{get_agent_server_url()}/auth/login", json=login_payload, timeout=15)
 		if response.status_code != 200:
 			error_msg = response.json().get("detail", "Login failed. Check your email and password.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
@@ -79,7 +153,7 @@ def refresh_agent_token_on_server(access_token: str) -> str:
 		"access_token": access_token
 	}
 	try:
-		response = requests.post(f"{AGENT_SERVER_URL}/auth/refresh", json=refresh_payload, timeout=15)
+		response = requests.post(f"{get_agent_server_url()}/auth/refresh", json=refresh_payload, timeout=15)
 		if response.status_code == 200:
 			return response.json().get("access_token")
 	except Exception as e:
@@ -89,20 +163,17 @@ def refresh_agent_token_on_server(access_token: str) -> str:
 
 # ---------------- Database Connection Helpers ----------------
 
-def get_agent_settings_doc(email: str):
-	"""Finds and returns the Agent Settings document matching the given email, or None."""
-	if not email:
-		return None
-	name = frappe.db.get_value("Agent Settings", {"email": email}, "name")
-	if name:
-		return frappe.get_doc("Agent Settings", name)
-	return None
+def save_agent_settings(
+	email: str, api_key: Optional[str] = None, access_token: Optional[str] = None
+) -> None:
+	"""Create or update the caller's Agent Settings record.
 
+	`api_key_hash` is maintained by AgentSettings.validate, so setting the key
+	here is enough to keep the authentication index correct.
+	"""
+	doc = get_agent_settings_doc(email)
 
-def save_agent_settings(email: str, api_key: str = None, access_token: str = None) -> None:
-	"""Creates or updates the Agent Settings record for the given agent email."""
 	try:
-		doc = get_agent_settings_doc(email)
 		if doc:
 			if access_token is not None:
 				doc.access_token = access_token
@@ -111,23 +182,78 @@ def save_agent_settings(email: str, api_key: str = None, access_token: str = Non
 			doc.save(ignore_permissions=True)
 		else:
 			if not api_key:
-				frappe.throw(_("API Key is required to create new Agent Settings."))
-			doc = frappe.get_doc({
+				frappe.throw(_("An API key is required to create a new connection."))
+			frappe.get_doc({
 				"doctype": "Agent Settings",
 				"email": email,
 				"api_key": api_key,
-				"access_token": access_token or ""
-			})
-			doc.insert(ignore_permissions=True)
+				"access_token": access_token or "",
+			}).insert(ignore_permissions=True)
+		frappe.db.commit()
+	except (frappe.ValidationError, frappe.DuplicateEntryError, frappe.PermissionError):
+		# Refusals the customer can act on — an e-mail already connected to a
+		# different ERPNext user, a missing key — must reach them intact. Only
+		# unexpected failures are translated into a generic message below.
+		#
+		# DuplicateEntryError is listed explicitly because it subclasses
+		# NameError, NOT ValidationError, in both Frappe 14 and 15
+		# (frappe/exceptions.py). Catching ValidationError alone would drop the
+		# one refusal this handler most needs to let through.
+		raise
+	except Exception as exc:
+		frappe.db.rollback()
+		frappe.log_error(
+			title="Accountant Agent: save settings",
+			message=f"Could not persist Agent Settings for {email}: {exc}",
+		)
+		frappe.throw(_("The connection could not be saved. Please try again."))
+
+
+def deprecate_previous_plans(session_id: str) -> None:
+	"""Mark every still-open plan in this session as superseded.
+
+	Filtered in SQL rather than in Python: a plan is the only content that
+	starts with that prefix, so fetching the whole transcript to discard almost
+	all of it is work the database can skip entirely — and on a long session it
+	is the difference between reading four rows and reading four thousand.
+	"""
+	try:
+		plans = frappe.get_all(
+			"Agent Chat History",
+			filters={
+				"session_id": session_id,
+				"content": ("like", '{"type": "plan"%'),
+			},
+			fields=["name", "content"],
+			order_by="creation desc",
+			limit=50,
+		)
+		for msg in plans:
+			if msg.content and msg.content.startswith('{"type": "plan"'):
+				try:
+					plan_data = json.loads(msg.content)
+					if plan_data.get("status") in ("pending", "refused", "approved"):
+						plan_data["status"] = "deprecated"
+						frappe.db.set_value(
+							"Agent Chat History",
+							msg.name,
+							"content",
+							json.dumps(plan_data, ensure_ascii=False)
+						)
+				except Exception as json_err:
+					frappe.log_error(f"Error deprecating plan message {msg.name}: {str(json_err)}", "Accountant Agent Deprecate Plan")
 		frappe.db.commit()
 	except Exception as e:
-		frappe.log_error(f"Error saving Agent Settings: {str(e)}", "Accountant Agent Save Settings")
-		frappe.throw(_(f"Failed to save credentials locally: {str(e)}"))
+		frappe.log_error(f"Error in deprecate_previous_plans: {str(e)}", "Accountant Agent Deprecate Plan")
 
 
 def save_chat_history(session_id: str, sender: str, content: str) -> None:
 	"""Saves a message in the Agent Chat History."""
 	try:
+		# If the new message is a plan, deprecate all previous plans in this session
+		if content and content.strip().startswith('{"type": "plan"'):
+			deprecate_previous_plans(session_id)
+
 		doc = frappe.get_doc({
 			"doctype": "Agent Chat History",
 			"creation1": frappe.utils.now_datetime(),
@@ -139,71 +265,82 @@ def save_chat_history(session_id: str, sender: str, content: str) -> None:
 		frappe.db.commit()
 	except Exception as e:
 		frappe.log_error(f"Error saving user message to history: {str(e)}", "Accountant Agent Chat")
-def get_history_payload(session_id: str) -> list:
-	"""Retrieves the last 10 messages to build chat history context, formatting JSON structures cleanly."""
-	history_records = frappe.get_all(
-		"Agent Chat History",
-		filters={"session_id": session_id},
-		fields=["sender", "content", "creation"],
-		order_by="creation desc",
-		limit=30
-	)
-	
-	payload = []
-	for rec in history_records:
-		content = rec.content or ""
-		# Format plan JSON if present
-		if rec.sender == "ai" and content.startswith('{"type": "plan"'):
-			try:
-				data = json.loads(content)
-				plan_text = data.get("plan", "")
-				status = data.get("status", "pending")
-				content = f"Proposed Analysis Plan:\n{plan_text}\n\nUser Confirmation Status: {status.capitalize()}"
-			except Exception:
-				pass
-		# Format clarification json if present
-		elif rec.sender == "ai" and content.startswith('{"type": "clarification"'):
-			try:
-				data = json.loads(content)
-				formatted_qs = []
-				for idx, q in enumerate(data.get("questions", [])):
-					q_text = f"{idx + 1}. Question: {q.get('question')}"
-					if q.get("options"):
-						q_text += f"\nOptions: {', '.join(q.get('options'))}"
-					formatted_qs.append(q_text)
-				content = "Requested Clarifications:\n" + "\n\n".join(formatted_qs)
-			except Exception:
-				pass
 
-		payload.append({
-			"role": "user" if rec.sender == "human" else "assistant",
-			"content": content
-		})
-		
-	# Slice the last 10 messages (or fewer if not available)
-	payload = payload[:10]
-	# Reverse to restore chronological order (oldest first)
-	payload.reverse()
-	return payload
+
+def save_chat_event_if_not_duplicate(session_id: str, sender: str, content: str) -> None:
+	"""Saves an event/error message in the Agent Chat History, preventing duplicates."""
+	try:
+		latest_content = frappe.db.get_value(
+			"Agent Chat History",
+			{"session_id": session_id},
+			"content",
+			order_by="creation desc"
+		)
+		if latest_content == content:
+			return
+		save_chat_history(session_id, sender, content)
+	except Exception as e:
+		frappe.log_error(f"Error checking/saving chat event: {str(e)}", "Accountant Agent Chat Event")
+
+
+def build_history_payload(session_id: str) -> str:
+	"""The recent conversation, as the JSON transcript the agent server expects.
+
+	Bounded to the most recent MAX_HISTORY_MESSAGES turns. The rows are fetched
+	newest-first so the database applies the limit through the session index,
+	then reversed, because the agent needs them oldest-first — fetching ascending
+	and slicing in Python would read the whole conversation to discard the front
+	of it.
+
+	Never raises: a history that cannot be read must degrade the request to a
+	context-free one, not fail the customer's message outright.
+	"""
+	if not session_id:
+		return ""
+
+	try:
+		recent = frappe.get_all(
+			"Agent Chat History",
+			filters={"session_id": session_id},
+			fields=["sender", "content"],
+			order_by="creation desc",
+			limit=MAX_HISTORY_MESSAGES,
+		)
+	except Exception as exc:
+		frappe.log_error(
+			title="Accountant Agent: history load",
+			message=f"Could not load history for session {session_id}: {exc}",
+		)
+		return ""
+
+	transcript = [
+		{"role": "user" if row.sender == "human" else "assistant", "content": row.content}
+		for row in reversed(recent)
+	]
+	return json.dumps(transcript, ensure_ascii=False)
+
+
 def post_message_to_agent(
 	message: str,
-	history: list,
 	token: str,
 	custom_instructions: str = None,
 	session_id: str = None,
 	agent_type: str = "ask",
 	file_urls: list = None,
+	history: list = None,
 ) -> requests.Response:
-	"""Sends message to the agent server ask API, with optional attached files and agent_type."""
+	"""Sends message to the agent server chat API, with optional attached files and agent_type."""
 	headers = {
 		"Authorization": f"Bearer {token}",
 	}
+	history_json = build_history_payload(session_id)
+
 	payload_data = {
 		"message": message,
-		"history": json.dumps(history) if history else "",
+		"history": history_json,
 		"custom_instructions": custom_instructions or "",
 		"session_id": session_id or "",
-		"agent_type": agent_type or "ask",
+		"selected_agent": agent_type or "ask",
 	}
 
 	files_list = []
@@ -212,22 +349,21 @@ def post_message_to_agent(
 	try:
 		if file_urls:
 			for url in file_urls:
-				filename = os.path.basename(url)
-				if "agent_uploads" in url:
-					file_path = frappe.get_site_path("public", "files", "agent_uploads", filename)
-				else:
-					file_path = frappe.get_site_path("public", "files", filename)
+				# Resolved through the same owner-scoped helper the download
+				# endpoint uses, so a session_id that names another user's
+				# attachment forwards nothing rather than leaking it.
+				file_path = resolve_agent_upload_path(url, frappe.session.user)
+				if not file_path:
+					continue
 
-				if os.path.exists(file_path):
-					f_obj = open(file_path, "rb")
-					opened_files.append(f_obj)
-					# Strip unique hex prefix if present for original filename
-					clean_filename = filename[13:] if (len(filename) > 13 and filename[12] == '_') else filename
-					files_list.append(("files", (clean_filename, f_obj)))
+				handle = open(file_path, "rb")
+				opened_files.append(handle)
+				files_list.append(
+					("files", (_original_filename(os.path.basename(file_path)), handle))
+				)
 
-		# Route request directly to specific endpoint based on agent_type
-		agent_endpoint = agent_type if agent_type in ("ask", "analyse", "audit") else "ask"
-		endpoint_url = f"{AGENT_SERVER_URL}/agent/{agent_endpoint}"
+		# Route request directly to chat endpoint
+		endpoint_url = f"{get_agent_server_url()}/agent/chat"
 
 		return requests.post(
 			endpoint_url,
@@ -242,7 +378,6 @@ def post_message_to_agent(
 				f.close()
 			except Exception:
 				pass
-
 
 
 def update_chat_timestamp(session_id: str) -> None:
@@ -264,7 +399,7 @@ def get_connection_status(agent_email=None):
 	try:
 		doc = get_agent_settings_doc(agent_email)
 		if doc:
-			token = doc.get_password("access_token")
+			token = doc.get_password("access_token", raise_exception=False)
 			if token:
 				return {"connected": True, "email": doc.email}
 	except Exception as e:
@@ -282,7 +417,9 @@ def authenticate_agent(mode, email, password, company_name=None):
 	
 	if not email or not password:
 		frappe.throw(_("Email and password are required."))
-		
+
+	assert_agent_account_is_connectable(email)
+	
 	if mode == "signup":
 		if not company_name:
 			frappe.throw(_("Company Name is required for registration."))
@@ -363,15 +500,14 @@ def get_latest_plan_message(session_id: str, lock: bool = False):
 @frappe.whitelist()
 def send_message(message, session_id, agent_email, agent_type="ask", file_urls=None):
 	"""Proxy message send to agent by enqueuing a background worker to handle streaming."""
-	user = frappe.session.user
-	if user == "Guest":
-		frappe.throw(_("Not authenticated with ERPNext."))
-		
+	user = _assert_signed_in()
+	assert_owns_session(session_id)
+
 	doc = get_agent_settings_doc(agent_email)
 	if not doc:
 		frappe.throw(_("Not authenticated with Accountant Agent."))
-		
-	access_token = doc.get_password("access_token")
+
+	access_token = doc.get_password("access_token", raise_exception=False)
 	if not access_token:
 		frappe.throw(_("Missing access token. Please re-authenticate."))
 
@@ -430,6 +566,8 @@ def process_agent_message_background(
 	if not doc:
 		error_msg = f"Agent Settings not found for {agent_email}."
 		frappe.log_error(error_msg, "Accountant Agent Stream")
+		save_chat_event_if_not_duplicate(session_id, "ai", f"⚠️ **Error:** {error_msg}")
+		update_chat_timestamp(session_id)
 		frappe.publish_realtime(
 			event="agent_message_error",
 			message={"session_id": session_id, "error": error_msg},
@@ -440,6 +578,8 @@ def process_agent_message_background(
 	access_token = doc.get_password("access_token")
 	if not access_token:
 		error_msg = "Access token missing. Please reconnect."
+		save_chat_event_if_not_duplicate(session_id, "ai", f"⚠️ **Error:** {error_msg}")
+		update_chat_timestamp(session_id)
 		frappe.publish_realtime(
 			event="agent_message_error",
 			message={"session_id": session_id, "error": error_msg},
@@ -448,18 +588,20 @@ def process_agent_message_background(
 		return
 
 	custom_instructions = getattr(doc, "custom_instructions", None) or ""
-	history_payload = get_history_payload(session_id)
 
 	headers = {
 		"Authorization": f"Bearer {access_token}",
 	}
+	history_json = build_history_payload(session_id)
+
 	payload_data = {
 		"message": message,
-		"history": json.dumps(history_payload) if history_payload else "",
+		"history": history_json,
 		"custom_instructions": custom_instructions,
 		"session_id": session_id or "",
 		"erp_system": "ERPNext",
 		"stream": "true",
+		"selected_agent": agent_type or "ask",
 	}
 
 	files_list = []
@@ -468,20 +610,20 @@ def process_agent_message_background(
 	try:
 		if file_urls:
 			for url in file_urls:
-				filename = os.path.basename(url)
-				if "agent_uploads" in url:
-					file_path = frappe.get_site_path("public", "files", "agent_uploads", filename)
-				else:
-					file_path = frappe.get_site_path("public", "files", filename)
+				# Resolved through the same owner-scoped helper the download
+				# endpoint uses, so a session_id that names another user's
+				# attachment forwards nothing rather than leaking it.
+				file_path = resolve_agent_upload_path(url, frappe.session.user)
+				if not file_path:
+					continue
 
-				if os.path.exists(file_path):
-					f_obj = open(file_path, "rb")
-					opened_files.append(f_obj)
-					clean_filename = filename[13:] if (len(filename) > 13 and filename[12] == '_') else filename
-					files_list.append(("files", (clean_filename, f_obj)))
+				handle = open(file_path, "rb")
+				opened_files.append(handle)
+				files_list.append(
+					("files", (_original_filename(os.path.basename(file_path)), handle))
+				)
 
-		agent_endpoint = agent_type if agent_type in ("ask", "analyse", "audit") else "ask"
-		endpoint_url = f"{AGENT_SERVER_URL}/agent/{agent_endpoint}"
+		endpoint_url = f"{get_agent_server_url()}/agent/chat"
 
 		response = requests.post(
 			endpoint_url,
@@ -515,6 +657,8 @@ def process_agent_message_background(
 				raise Exception("Session expired. Please reconnect.")
 
 		if response.status_code == 499:
+			save_chat_event_if_not_duplicate(session_id, "ai", "⚠️ **Cancelled**")
+			update_chat_timestamp(session_id)
 			frappe.publish_realtime(
 				event="agent_message_cancelled",
 				message={"session_id": session_id},
@@ -530,7 +674,7 @@ def process_agent_message_background(
 			raise Exception(err_detail)
 
 		current_event = None
-		for line in response.iter_lines():
+		for line in response.iter_lines(chunk_size=1):
 			if not line:
 				continue
 			line_str = line.decode("utf-8").strip()
@@ -542,6 +686,13 @@ def process_agent_message_background(
 					data_json = json.loads(data_str)
 				except Exception:
 					data_json = {"text": data_str}
+
+				if isinstance(data_json, dict) and "data" in data_json and isinstance(data_json["data"], dict):
+					unwrapped = dict(data_json["data"])
+					for k, v in data_json.items():
+						if k != "data" and k not in unwrapped:
+							unwrapped[k] = v
+					data_json = unwrapped
 
 				if current_event == "text":
 					frappe.publish_realtime(
@@ -556,15 +707,30 @@ def process_agent_message_background(
 						user=user,
 					)
 				elif current_event == "node_start":
+					# `label` is what the client shows. It is written by the
+					# agent in business language, because the alternative is a
+					# lookup table in the browser that has to be kept in step
+					# with every pipeline rename — and when it falls behind it
+					# does not fail, it quietly captions every step
+					# "Processing...". The node name still travels for logging.
 					frappe.publish_realtime(
 						event="agent_node_start",
-						message={"session_id": session_id, "node": data_json.get("node", "")},
+						message={
+							"session_id": session_id,
+							"node": data_json.get("node", ""),
+							"label": data_json.get("label", ""),
+						},
 						user=user,
 					)
 				elif current_event == "tool_start":
 					frappe.publish_realtime(
 						event="agent_tool_start",
-						message={"session_id": session_id, "tool": data_json.get("tool", ""), "input": data_json.get("input", {})},
+						message={
+							"session_id": session_id,
+							"tool": data_json.get("tool", ""),
+							"label": data_json.get("label", ""),
+							"input": data_json.get("input", {}),
+						},
 						user=user,
 					)
 				elif current_event == "done":
@@ -582,6 +748,8 @@ def process_agent_message_background(
 
 	except Exception as e:
 		error_msg = str(e)
+		save_chat_event_if_not_duplicate(session_id, "ai", f"⚠️ **Error:** {error_msg}")
+		update_chat_timestamp(session_id)
 		frappe.log_error(f"Error processing agent message in background: {error_msg}", "Accountant Agent Chat Background")
 		frappe.publish_realtime(
 			event="agent_message_error",
@@ -596,20 +764,18 @@ def process_agent_message_background(
 				pass
 
 
-
 @frappe.whitelist()
 def cancel_agent(session_id, agent_email):
 	"""Proxy cancellation request to the agent server."""
-	user = frappe.session.user
-	if user == "Guest":
-		frappe.throw(_("Not authenticated with ERPNext."))
-		
+	_assert_signed_in()
+	assert_owns_session(session_id)
+
 	doc = get_agent_settings_doc(agent_email)
 	if not doc:
 		frappe.throw(_("Not authenticated with Accountant Agent."))
-		
-	access_token = doc.get_password("access_token")
-	
+
+	access_token = doc.get_password("access_token", raise_exception=False)
+
 	if not access_token:
 		frappe.throw(_("Missing access token. Please re-authenticate."))
 
@@ -621,7 +787,7 @@ def cancel_agent(session_id, agent_email):
 		"session_id": session_id
 	}
 	try:
-		response = requests.post(f"{AGENT_SERVER_URL}/agent/cancel", json=payload, headers=headers, timeout=15)
+		response = requests.post(f"{get_agent_server_url()}/agent/cancel", json=payload, headers=headers, timeout=15)
 		
 		# Handle expired token (401)
 		if response.status_code == 401:
@@ -629,7 +795,7 @@ def cancel_agent(session_id, agent_email):
 			if new_access_token:
 				save_agent_settings(agent_email, access_token=new_access_token)
 				headers["Authorization"] = f"Bearer {new_access_token}"
-				response = requests.post(f"{AGENT_SERVER_URL}/agent/cancel", json=payload, headers=headers, timeout=15)
+				response = requests.post(f"{get_agent_server_url()}/agent/cancel", json=payload, headers=headers, timeout=15)
 			else:
 				# Clear invalid token to force re-login
 				save_agent_settings(agent_email, access_token="")
@@ -639,6 +805,8 @@ def cancel_agent(session_id, agent_email):
 			error_msg = response.json().get("detail", "Error from Agent Server.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
 			
+		save_chat_event_if_not_duplicate(session_id, "ai", "⚠️ **Cancelled**")
+		update_chat_timestamp(session_id)
 		return {"success": True, "message": response.json().get("message")}
 		
 	except requests.exceptions.RequestException as e:
@@ -647,17 +815,24 @@ def cancel_agent(session_id, agent_email):
 
 
 @frappe.whitelist()
-def get_chat_history(session_id):
-	"""Retrieves chat history messages for a specific session."""
-	if not session_id:
-		return []
-	
-	return frappe.get_all(
+def get_chat_history(session_id: str, limit: Optional[int] = None) -> list[dict]:
+	"""The caller's own transcript for one session, most recent page first.
+
+	Bounded: a year-old reconciliation thread is not something to serialise in
+	full into a single HTTP response.
+	"""
+	assert_owns_session(session_id)
+
+	page_size = min(int(limit or MAX_HISTORY_PAGE_SIZE), MAX_HISTORY_PAGE_SIZE)
+
+	recent = frappe.get_all(
 		"Agent Chat History",
 		filters={"session_id": session_id},
 		fields=["name", "sender", "content", "creation1", "creation"],
-		order_by="creation asc"
+		order_by="creation desc",
+		limit=page_size,
 	)
+	return list(reversed(recent))
 
 
 @frappe.whitelist()
@@ -666,52 +841,64 @@ def disconnect_agent(agent_email):
 	if not agent_email:
 		return {"success": False}
 		
-	user = frappe.session.user
-	if user != "Guest":
-		doc = get_agent_settings_doc(agent_email)
-		if doc:
-			# Directly delete the token from the __Auth table as Frappe's save ignores empty password fields
-			frappe.db.sql("delete from `__Auth` where `doctype`='Agent Settings' and `name`=%s and `fieldname`='access_token'", doc.name)
-			frappe.db.set_value("Agent Settings", doc.name, "access_token", "")
-			frappe.db.commit()
-			return {"success": True}
-	return {"success": False}
+	_assert_signed_in()
+
+	doc = get_agent_settings_doc(agent_email)
+	if not doc:
+		return {"success": False}
+
+	# Removed from __Auth directly: Document.save skips empty Password fields,
+	# so clearing the field alone would leave a usable token behind.
+	frappe.db.sql(
+		"delete from `__Auth` where `doctype`='Agent Settings' and `name`=%s and `fieldname`='access_token'",
+		doc.name,
+	)
+	frappe.db.set_value("Agent Settings", doc.name, "access_token", "")
+	frappe.db.commit()
+	return {"success": True}
 
 
 @frappe.whitelist()
-def delete_agent_account(agent_email):
-	"""Deletes the agent account on the agent server, then deletes the local settings document."""
+def delete_agent_account(agent_email: str) -> dict:
+	"""Delete the caller's own agent account on the platform, then locally.
+
+	Guard clauses over nesting (project_rules.md §1): the ownership check in
+	get_agent_settings_doc is what stops one signed-in user from deleting
+	another user's paid account by naming their e-mail.
+	"""
 	if not agent_email:
 		return {"success": False}
-		
-	user = frappe.session.user
-	if user != "Guest":
-		doc = get_agent_settings_doc(agent_email)
-		if doc:
-			access_token = doc.get_password("access_token")
-			user_id = None
-			if access_token:
-				payload = decode_jwt_payload(access_token)
-				user_id = payload.get("sub")
 
-			# Fallback to api_key for legacy users
-			if not user_id:
-				user_id = doc.get_password("api_key")
+	_assert_signed_in()
 
-			if user_id:
-				try:
-					response = requests.delete(f"{AGENT_SERVER_URL}/users/{user_id}", timeout=15)
-					if response.status_code not in (200, 404):
-						error_msg = response.json().get("detail", "Failed to delete account on Agent Server.")
-						frappe.throw(_(f"Agent Server Error: {error_msg}"))
-				except requests.exceptions.RequestException as e:
-					frappe.log_error(f"Agent account deletion request error: {str(e)}", "Accountant Agent Delete Account")
-					frappe.throw(_("Could not connect to Agent Server to delete account. Please try again."))
-			
-			frappe.delete_doc("Agent Settings", doc.name, ignore_permissions=True)
-			frappe.db.commit()
-			return {"success": True}
-	return {"success": False}
+	doc = get_agent_settings_doc(agent_email)
+	if not doc:
+		return {"success": False}
+
+	access_token = doc.get_password("access_token", raise_exception=False)
+	user_id = decode_jwt_payload(access_token).get("sub") if access_token else None
+
+	# Fall back to the API key for accounts created before tokens carried a sub.
+	if not user_id:
+		user_id = doc.get_password("api_key", raise_exception=False)
+
+	if user_id:
+		try:
+			response = requests.delete(
+				f"{get_agent_server_url()}/users/{user_id}", timeout=15
+			)
+			if response.status_code not in (200, 404):
+				frappe.throw(_("The agent account could not be deleted. Please try again."))
+		except requests.exceptions.RequestException as exc:
+			frappe.log_error(
+				title="Accountant Agent: account deletion",
+				message=f"Could not reach the agent server to delete {agent_email}: {exc}",
+			)
+			frappe.throw(_("Could not reach the Accountant Agent service. Please try again."))
+
+	frappe.delete_doc("Agent Settings", doc.name, ignore_permissions=True)
+	frappe.db.commit()
+	return {"success": True}
 
 
 # ---------------- Chat Session Management Endpoints ----------------
@@ -814,6 +1001,14 @@ def create_chat_with_id(session_id, title=None):
 		
 	if frappe.db.exists("Agent Chats", session_id):
 		frappe.throw(_("Chat session already exists."))
+
+	# The client picks this identifier, so it must look like one the client
+	# generated rather than an arbitrary string that could collide with, or be
+	# confused for, another customer's session key.
+	try:
+		uuid.UUID(str(session_id))
+	except (ValueError, AttributeError, TypeError):
+		frappe.throw(_("Invalid session identifier."), frappe.ValidationError)
 		
 	doc = frappe.get_doc({
 		"doctype": "Agent Chats",
@@ -851,28 +1046,103 @@ def _parse_json_list(value) -> list | None:
 
 # ─── Agent File Upload Endpoint ─────────────────────────────────────────────
 
-AGENT_UPLOAD_DIR = "agent_uploads"
+AGENT_UPLOAD_DIR: str = "agent_uploads"
 MAX_UPLOAD_SIZE_BYTES: int = 20 * 1024 * 1024  # 20 MB endpoint cap to support Excel uploads
-ALLOWED_ACCOUNTANT_EXTENSIONS: set = {
+ALLOWED_ACCOUNTANT_EXTENSIONS: frozenset[str] = frozenset({
 	".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".txt",
-	".pptx", ".ppt", ".png", ".jpg", ".jpeg", ".gif", ".webp"
-}
+	".pptx", ".ppt", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+})
+_IMAGE_EXTENSIONS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
+
+#: The whitelisted route every stored attachment URL points at. Storing the
+#: endpoint rather than a filesystem path is what lets the file itself live in
+#: the private store while the chat UI keeps rendering a plain link.
+_DOWNLOAD_ENDPOINT: str = (
+	"/api/method/accountant_agent.accountant_agent.page.agent_chat.agent_chat.download_file"
+)
+
+
+def _owner_token(user: str) -> str:
+	"""A stable, opaque directory name for one user's uploads.
+
+	Ownership is enforced by the shape of the path, not by the secrecy of this
+	value. `resolve_agent_upload_path` takes only the BASENAME from the caller's
+	URL and joins it beneath the directory of whoever is authenticated — the
+	caller can never supply the directory component. A user asking for a
+	colleague's filename therefore looks in their own directory and finds
+	nothing, whether or not they can guess what the colleague's token is.
+
+	Because secrecy buys nothing here, this is deliberately NOT keyed on the
+	site's encryption key. Keying it there would mean that rotating that key —
+	which Frappe supports, and which re-encrypts `__Auth` — silently orphaned
+	every attachment in every live conversation, since the recomputed token
+	would point at a directory that no longer exists. A plain digest of the
+	user id is stable for the life of the site.
+
+	The digest rather than the raw e-mail keeps addresses out of directory
+	listings and off any path that reaches a log.
+	"""
+	return hashlib.sha256(user.encode("utf-8")).hexdigest()[:32]
+
+
+def _upload_root(user: str) -> str:
+	"""Absolute path of one user's private upload directory."""
+	return frappe.get_site_path("private", "files", AGENT_UPLOAD_DIR, _owner_token(user))
+
+
+def resolve_agent_upload_path(file_url: str, user: str) -> Optional[str]:
+	"""Filesystem path for a stored attachment URL, or None if it is not the caller's.
+
+	Accepts the private form written since this app started storing uploads
+	privately, and still resolves the legacy public form so conversations that
+	predate the change keep rendering their attachments.
+	"""
+	if not file_url:
+		return None
+
+	name = os.path.basename(file_url.split("?")[-1] if "file_url=" in file_url else file_url)
+	# Defence in depth behind basename: a traversal attempt should be visible
+	# as a refusal, not silently normalised away.
+	if not name or name in (".", "..") or "/" in name or "\\" in name:
+		return None
+
+	private_path = os.path.join(_upload_root(user), name)
+	if os.path.exists(private_path):
+		return private_path
+
+	# Legacy: uploads written to the public store before this app moved them.
+	if AGENT_UPLOAD_DIR in file_url:
+		legacy = frappe.get_site_path("public", "files", AGENT_UPLOAD_DIR, name)
+	else:
+		legacy = frappe.get_site_path("public", "files", name)
+
+	return legacy if os.path.exists(legacy) else None
+
+
+def _original_filename(stored_name: str) -> str:
+	"""Strip the collision-avoidance prefix back off a stored filename."""
+	if len(stored_name) > 13 and stored_name[12] == "_":
+		return stored_name[13:]
+	return stored_name
 
 
 @frappe.whitelist()
-def upload_agent_file():
-	"""
-	Custom file upload endpoint that saves files to a dedicated agent_uploads directory.
+def upload_agent_file() -> dict:
+	"""Store one attachment for the signed-in user and return its download URL.
 
-	Reads the file from the request (multipart form data), validates safe file type and size,
-	saves to <site>/public/files/agent_uploads/, and returns the file URL.
+	WHY THE PRIVATE STORE
+	    These are bank statements, trial balances and fixed-asset registers.
+	    Frappe serves everything under `<site>/public/files/` to anonymous
+	    callers by URL alone — no session, no permission check — so a file
+	    written there is published to anyone who ever sees the link, including
+	    through a browser referrer header or a copied chat transcript. The
+	    unguessable filename was doing all the work, and an unguessable
+	    identifier is not an access control.
 
 	Returns:
 		dict with keys: file_url (str), filename (str), is_image (bool).
 	"""
-	user = frappe.session.user
-	if user == "Guest":
-		frappe.throw(_("Authentication required."), frappe.AuthenticationError)
+	user = _assert_signed_in()
 
 	uploaded_file = frappe.request.files.get("file")
 	if not uploaded_file:
@@ -882,95 +1152,71 @@ def upload_agent_file():
 	if not filename:
 		frappe.throw(_("Filename is missing."), frappe.ValidationError)
 
-	# Validate safe file extension
-	ext = os.path.splitext(filename.lower())[1]
-	if ext not in ALLOWED_ACCOUNTANT_EXTENSIONS:
+	extension = os.path.splitext(filename.lower())[1]
+	if extension not in ALLOWED_ACCOUNTANT_EXTENSIONS:
 		frappe.throw(
-			_(f"File type '{ext}' is not permitted for security reasons. Allowed types: {', '.join(sorted(ALLOWED_ACCOUNTANT_EXTENSIONS))}"),
+			_("File type '{0}' is not permitted. Allowed types: {1}").format(
+				extension, ", ".join(sorted(ALLOWED_ACCOUNTANT_EXTENSIONS))
+			),
 			frappe.ValidationError,
 		)
 
-	# Read file content and validate size
-	file_content = uploaded_file.read()
-	file_size = len(file_content)
-
-	if file_size > MAX_UPLOAD_SIZE_BYTES:
-		size_mb = file_size / (1024 * 1024)
+	content = uploaded_file.read()
+	if len(content) > MAX_UPLOAD_SIZE_BYTES:
 		frappe.throw(
-			_(f"File exceeds the maximum allowed size of 20 MB. Your file is {size_mb:.1f} MB. Please upload a smaller file."),
+			_("File exceeds the maximum allowed size of {0} MB. Your file is {1:.1f} MB.").format(
+				MAX_UPLOAD_SIZE_BYTES // (1024 * 1024), len(content) / (1024 * 1024)
+			),
 			frappe.ValidationError,
 		)
 
-	# Determine if file is an image
-	image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-	is_image = ext in image_extensions
-
-	# Ensure the agent_uploads directory exists
-	upload_dir = frappe.get_site_path("public", "files", AGENT_UPLOAD_DIR)
+	upload_dir = _upload_root(user)
 	os.makedirs(upload_dir, exist_ok=True)
 
-	# Generate a unique filename to prevent collisions
-	unique_name = f"{uuid.uuid4().hex[:12]}_{filename}"
-	file_path = os.path.join(upload_dir, unique_name)
+	# Frappe never serves the private store directly, but a directory listing
+	# left world-readable on a shared host would defeat the point of moving here.
+	os.chmod(upload_dir, 0o700)
 
-	# Write file to disk
-	with open(file_path, "wb") as f:
-		f.write(file_content)
-
-	file_url = f"/files/{AGENT_UPLOAD_DIR}/{unique_name}"
+	stored_name = f"{uuid.uuid4().hex[:12]}_{os.path.basename(filename)}"
+	with open(os.path.join(upload_dir, stored_name), "wb") as handle:
+		handle.write(content)
 
 	return {
-		"file_url": file_url,
+		"file_url": f"{_DOWNLOAD_ENDPOINT}?file_url={AGENT_UPLOAD_DIR}/{stored_name}",
 		"filename": filename,
-		"is_image": is_image,
+		"is_image": extension in _IMAGE_EXTENSIONS,
 	}
 
 
 @frappe.whitelist()
-def download_file(file_url: str):
+def download_file(file_url: str) -> None:
+	"""Serve one of the caller's own attachments, inline where the browser can.
+
+	The only route to an agent attachment. `resolve_agent_upload_path` scopes
+	the lookup to the caller's own directory, so a signed-in user asking for
+	somebody else's filename gets the same answer as one asking for a filename
+	that never existed.
 	"""
-	Downloads or serves a file from the agent_uploads directory or standard files.
-	Supports inline display for images/PDFs.
-	"""
-	user = frappe.session.user
-	if user == "Guest":
-		frappe.throw(_("Authentication required."), frappe.AuthenticationError)
+	user = _assert_signed_in()
 
 	if not file_url:
 		frappe.throw(_("File URL is required."), frappe.ValidationError)
 
-	filename = os.path.basename(file_url)
-
-	# Safety checks: prevent directory traversal
-	if ".." in filename or "/" in filename or "\\" in filename:
-		frappe.throw(_("Invalid filename."), frappe.ValidationError)
-
-	if "agent_uploads" in file_url:
-		file_path = frappe.get_site_path("public", "files", AGENT_UPLOAD_DIR, filename)
-	else:
-		file_path = frappe.get_site_path("public", "files", filename)
-
-	print(f"[DEBUG] download_file: file_url={file_url}, site={frappe.local.site}, file_path={file_path}, exists={os.path.exists(file_path)}")
-
-	if not os.path.exists(file_path):
+	file_path = resolve_agent_upload_path(file_url, user)
+	if not file_path:
 		frappe.throw(_("File not found."), frappe.DoesNotExistError)
 
-	# Guess mime type for correct browser rendering/inline preview
-	import mimetypes
-	content_type, _ = mimetypes.guess_type(file_path)
-
-	frappe.local.response.filename = filename
-	
 	try:
-		with open(file_path, "rb") as f:
-			frappe.local.response.filecontent = f.read()
+		with open(file_path, "rb") as handle:
+			frappe.local.response.filecontent = handle.read()
 	except OSError:
 		frappe.throw(_("Unable to read file content."), frappe.ValidationError)
 
+	stored_name = os.path.basename(file_path)
+	content_type, _encoding = mimetypes.guess_type(file_path)
+
+	frappe.local.response.filename = _original_filename(stored_name)
 	frappe.local.response.type = "download"
 	frappe.local.response.display_content_as = "inline"
-	
 	if content_type:
 		frappe.local.response.content_type = content_type
-
-

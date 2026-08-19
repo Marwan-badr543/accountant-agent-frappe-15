@@ -1,14 +1,20 @@
 /**
  * Agent Selector Module
  * ---------------------
- * Manages the selection of agent type ('ask', 'analyse', 'audit').
+ * Manages the selection of agent type ('ask', 'analyse', 'audit', 'reconcile', 'create').
  * Renders an intuitive, elegant agent type switcher in the chat UI.
- * Provides validation rules per agent type.
+ *
+ * AGENT_DEFINITIONS is the single source of truth for per-agent upload limits.
+ * The numbers here MUST mirror the AgentSettings declared for each agent on the
+ * server in each agent's service module (its AgentSettings). If the UI is more
+ * permissive than the server, the user uploads a file and is only told it is
+ * too large after the request has already failed. file_upload_handler.js reads
+ * these rules rather than repeating them.
  */
 
 class AgentSelector {
 	constructor(options = {}) {
-		this.selected_agent = options.default_agent || 'ask'; // 'ask', 'analyse', or 'audit'
+		this.selected_agent = options.default_agent || 'ask'; // 'ask', 'analyse', 'audit', 'reconcile', or 'create'
 		this.on_change = options.on_change || null;
 		this.$container = null;
 
@@ -32,11 +38,12 @@ class AgentSelector {
 				name: __('Analyse Agent'),
 				icon: 'fa-bar-chart',
 				badge_class: 'agent-type-analyse',
-				description: __('In-depth analysis. Max 5 files (15 MB total, Excel up to 20 MB).'),
+				description: __('In-depth analysis. Max 5 files (10 MB total, Excel up to 20 MB).'),
 				rules: {
 					max_files: 5,
 					max_per_file_mb: 20,
-					max_non_excel_total_mb: 15,
+					// Mirrors ANALYSE_SETTINGS.max_non_excel_total_bytes (10 MB).
+					max_non_excel_total_mb: 10,
 					max_excel_total_mb: 20,
 					is_aggregate: true
 				}
@@ -51,6 +58,42 @@ class AgentSelector {
 					max_files: 5,
 					max_per_file_mb: 20,
 					max_non_excel_total_mb: 15,
+					max_excel_total_mb: 20,
+					is_aggregate: true
+				}
+			},
+			reconcile: {
+				id: 'reconcile',
+				name: __('Reconciliation Agent'),
+				icon: 'fa-balance-scale',
+				badge_class: 'agent-type-reconcile',
+				description: __('Match two or more sources and explain every difference. Max 8 files (20 MB total, Excel up to 40 MB).'),
+				// A reconciliation compares N sources, so it needs more headroom
+				// than the single-source agents: a 3-way match with supporting
+				// schedules is already 4-5 files before any opening balance.
+				// Mirrors RECONCILE_SETTINGS on the server.
+				rules: {
+					max_files: 8,
+					max_per_file_mb: 40,
+					max_non_excel_total_mb: 20,
+					max_excel_total_mb: 40,
+					is_aggregate: true
+				}
+			},
+			create: {
+				id: 'create',
+				name: __('Creator Agent'),
+				icon: 'fa-pencil-square-o',
+				badge_class: 'agent-type-create',
+				description: __('Prepare and record entries in your ERP. Every document is saved as a draft for your approval. Max 3 files (10 MB total, Excel up to 20 MB).'),
+				// The ONLY agent that writes. Mirrors CREATE_SETTINGS on the
+				// server: fewer files than the read agents, because a creation
+				// request is one document or one import sheet, not an N-part
+				// comparison.
+				rules: {
+					max_files: 3,
+					max_per_file_mb: 20,
+					max_non_excel_total_mb: 10,
 					max_excel_total_mb: 20,
 					is_aggregate: true
 				}

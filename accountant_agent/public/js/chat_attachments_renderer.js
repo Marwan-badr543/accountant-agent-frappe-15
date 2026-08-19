@@ -14,9 +14,20 @@
 class ChatAttachmentsRenderer {
 
 	constructor() {
-		// Regex patterns for attachment markers
-		this.FILE_PATTERN = /\[FILE:([^:]+):([^\]]+)\]/g;
-		this.IMAGE_PATTERN = /\[IMAGE:([^:]+):([^\]]+)\]/g;
+		// Regex patterns for attachment markers (supports optional FILE:/IMAGE: prefix for robustness)
+		this.FILE_PATTERN = /\[(?:FILE:)?([^:]+):(\/(?:private|files|api)[^\]]+|https?:\/\/[^\]]+)\]/g;
+		this.IMAGE_PATTERN = /\[(?:IMAGE:)?([^:]+):(\/(?:private|files|api)[^\]]+|https?:\/\/[^\]]+)\]/g;
+	}
+
+	_unescape_html_entities(str) {
+		if (!str) return '';
+		return str
+			.replace(/&#x2F;/g, '/')
+			.replace(/&lt;/g, '<')
+			.replace(/&gt;/g, '>')
+			.replace(/&quot;/g, '"')
+			.replace(/&#x27;/g, "'")
+			.replace(/&amp;/g, '&');
 	}
 
 	/**
@@ -28,6 +39,8 @@ class ChatAttachmentsRenderer {
 	parse_and_render(content) {
 		if (!content) return { text: '', attachments_html: '' };
 
+		let unescaped_content = this._unescape_html_entities(content);
+
 		// Reset regex lastIndex to 0 for fresh matches
 		this.FILE_PATTERN.lastIndex = 0;
 		this.IMAGE_PATTERN.lastIndex = 0;
@@ -37,19 +50,25 @@ class ChatAttachmentsRenderer {
 
 		// Extract FILE markers
 		let match;
-		while ((match = this.FILE_PATTERN.exec(content)) !== null) {
+		while ((match = this.FILE_PATTERN.exec(unescaped_content)) !== null) {
 			files.push({ name: match[1], url: match[2] });
 		}
 
 		// Extract IMAGE markers
-		while ((match = this.IMAGE_PATTERN.exec(content)) !== null) {
+		while ((match = this.IMAGE_PATTERN.exec(unescaped_content)) !== null) {
 			images.push({ name: match[1], url: match[2] });
 		}
 
-		// Remove markers from text
+		// Remove markers from text (handles both escaped and unescaped formats)
 		let clean_text = content
 			.replace(this.FILE_PATTERN, '')
-			.replace(this.IMAGE_PATTERN, '')
+			.replace(this.IMAGE_PATTERN, '');
+
+		let escaped_file_pattern = /\[(?:FILE:)?([^:]+):(&#x2F;(?:private|files|api)[^\]]+|https?:\/\/[^\]]+)\]/g;
+		let escaped_image_pattern = /\[(?:IMAGE:)?([^:]+):(&#x2F;(?:private|files|api)[^\]]+|https?:\/\/[^\]]+)\]/g;
+		clean_text = clean_text
+			.replace(escaped_file_pattern, '')
+			.replace(escaped_image_pattern, '')
 			.trim();
 
 		// Build attachments HTML
@@ -78,10 +97,11 @@ class ChatAttachmentsRenderer {
 	 */
 	has_attachments(content) {
 		if (!content) return false;
+		let unescaped_content = this._unescape_html_entities(content);
 		// Reset regex lastIndex for fresh test
 		this.FILE_PATTERN.lastIndex = 0;
 		this.IMAGE_PATTERN.lastIndex = 0;
-		return this.FILE_PATTERN.test(content) || this.IMAGE_PATTERN.test(content);
+		return this.FILE_PATTERN.test(unescaped_content) || this.IMAGE_PATTERN.test(unescaped_content);
 	}
 
 	// ─── Private Renderers ─────────────────────────────────────────────────
@@ -89,6 +109,17 @@ class ChatAttachmentsRenderer {
 	_render_file_chip(name, url) {
 		let icon = this._get_file_icon(name);
 		let escaped_name = this._escape_html(name);
+		let escaped_url = this._escape_html(url || '');
+
+		if (url) {
+			return `
+				<a href="${escaped_url}" target="_blank" class="agent-attachment-chip file-chip clickable" title="${escaped_name}" style="text-decoration: none; color: inherit;">
+					<span class="attachment-icon">${icon}</span>
+					<span class="attachment-name">${this._truncate_name(escaped_name, 25)}</span>
+					<span class="attachment-link-icon">🔗</span>
+				</a>
+			`;
+		}
 
 		return `
 			<div class="agent-attachment-chip file-chip unclickable" title="${escaped_name}">
@@ -100,7 +131,18 @@ class ChatAttachmentsRenderer {
 
 	_render_image_thumbnail(name, url) {
 		let escaped_name = this._escape_html(name);
+		let escaped_url = this._escape_html(url || '');
 		let icon = '🖼️'; // A different icon for images
+
+		if (url) {
+			return `
+				<a href="${escaped_url}" target="_blank" class="agent-attachment-chip image-chip clickable" title="${escaped_name}" style="text-decoration: none; color: inherit;">
+					<span class="attachment-icon">${icon}</span>
+					<span class="attachment-name">${this._truncate_name(escaped_name, 25)}</span>
+					<span class="attachment-link-icon">🔗</span>
+				</a>
+			`;
+		}
 
 		return `
 			<div class="agent-attachment-chip image-chip unclickable" title="${escaped_name}">
