@@ -58,7 +58,9 @@ class FileUploadHandler {
 			'.eml', '.msg', '.mbox', '.ics', '.vcf',
 			// Images and scans
 			'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff',
-			'.heic', '.heif', '.avif'
+			'.heic', '.heif', '.avif',
+			// Unpacked server-side; only permitted types inside survive.
+			'.zip'
 		]);
 
 		this.EXCEL_EXTENSIONS = new Set(['.xlsx', '.xls', '.ods']);

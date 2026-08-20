@@ -1147,6 +1147,9 @@ ALLOWED_ACCOUNTANT_EXTENSIONS: frozenset[str] = frozenset({
 	# Images and scans
 	".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
 	".heic", ".heif", ".avif",
+	# Archives are unpacked by the agent server on arrival, and only the
+	# permitted types inside them survive that. See extract_archive.
+	".zip",
 })
 _IMAGE_EXTENSIONS: frozenset[str] = frozenset({
 	".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
