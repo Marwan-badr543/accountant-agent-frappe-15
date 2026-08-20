@@ -28,14 +28,44 @@ class FileUploadHandler {
 		// Processing lock
 		this.is_processing = false;
 
-		// Safe accountant file extensions whitelist
+		// Every document, data and image type an accountant legitimately
+		// sends, and nothing that carries executable code.
+		//
+		// This list MUST stay in step with ALLOWED_ACCOUNTANT_EXTENSIONS in
+		// agent_chat.py. That is the one that actually protects the server;
+		// this one exists so the file picker filters sensibly and a refusal
+		// happens before a 100 MB upload rather than after it.
+		//
+		// Deliberately absent: source and script files, executables, and
+		// macro-enabled Office formats (.xlsm .xlsb .docm .pptm), which are
+		// spreadsheets that run code when opened. Also absent is markup a
+		// browser executes (.html .svg), because rendering is execution.
 		this.ALLOWED_EXTENSIONS = new Set([
-			'.pdf', '.docx', '.doc', '.xlsx', '.xls', '.csv', '.txt',
-			'.pptx', '.ppt', '.png', '.jpg', '.jpeg', '.gif', '.webp'
+			// Portable documents and word processing
+			'.pdf', '.doc', '.docx', '.odt', '.rtf',
+			// Spreadsheets, macro-free
+			'.xls', '.xlsx', '.ods',
+			// Presentations
+			'.ppt', '.pptx', '.odp',
+			// Plain text, notes and structured data
+			'.txt', '.md', '.markdown', '.rst', '.log', '.csv', '.tsv', '.psv',
+			'.json', '.jsonl', '.ndjson', '.yaml', '.yml', '.toml', '.ini',
+			'.cfg', '.conf', '.xml',
+			// Accounting and banking interchange formats
+			'.ofx', '.qfx', '.qbo', '.qif', '.mt940', '.sta', '.camt', '.aba',
+			'.bai', '.bai2', '.edi', '.x12', '.iif', '.xbrl', '.ubl', '.dat',
+			// Correspondence attached as evidence
+			'.eml', '.msg', '.mbox', '.ics', '.vcf',
+			// Images and scans
+			'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff',
+			'.heic', '.heif', '.avif'
 		]);
 
-		this.EXCEL_EXTENSIONS = new Set(['.xlsx', '.xls']);
-		this.IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+		this.EXCEL_EXTENSIONS = new Set(['.xlsx', '.xls', '.ods']);
+		this.IMAGE_EXTENSIONS = new Set([
+			'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff',
+			'.heic', '.heif', '.avif'
+		]);
 	}
 
 	// ─── Initialization ────────────────────────────────────────────────────
@@ -52,15 +82,15 @@ class FileUploadHandler {
 	_render_attach_button() {
 		this.$attach_btn = $(`
 			<button class="agent-attach-btn" type="button" title="${__('Attach files or images (up to 5 files)')}">
-				<svg viewBox="0 0 24 24" width="20" height="20">
+				<svg viewBox="0 0 24 24" width="18" height="18">
 					<path d="M16.5 6v11.5a4 4 0 0 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 0 1-2 0V6h-1v9.5a2 2 0 0 0 4 0V5a3.5 3.5 0 0 0-7 0v12.5a5 5 0 0 0 10 0V6h-1z" fill="currentColor"/>
 				</svg>
 			</button>
 		`);
 
-		let $flex_row = this.$container.find('div[style*="display: flex"]').first();
-		if ($flex_row.length) {
-			$flex_row.prepend(this.$attach_btn);
+		let $footer_left = this.$container.find('.agent-input-footer-left');
+		if ($footer_left.length) {
+			$footer_left.prepend(this.$attach_btn);
 		}
 	}
 
@@ -71,9 +101,9 @@ class FileUploadHandler {
 			</div>
 		`);
 
-		let $flex_row = this.$container.find('div[style*="display: flex"]').first();
-		if ($flex_row.length) {
-			$flex_row.before(this.$preview_area);
+		let $card = this.$container.find('.agent-input-card');
+		if ($card.length) {
+			$card.prepend(this.$preview_area);
 		}
 	}
 
@@ -84,16 +114,18 @@ class FileUploadHandler {
 			this._open_file_picker();
 		});
 
+		let $card = this.$container.find('.agent-input-card');
+
 		this.$textarea.on('dragover', (e) => {
 			e.preventDefault();
 			e.stopPropagation();
-			this.$textarea.addClass('agent-drag-over');
+			$card.addClass('agent-drag-over');
 		});
 
 		this.$textarea.on('dragleave drop', (e) => {
 			e.preventDefault();
 			e.stopPropagation();
-			this.$textarea.removeClass('agent-drag-over');
+			$card.removeClass('agent-drag-over');
 
 			if (e.type === 'drop') {
 				let files = e.originalEvent.dataTransfer.files;

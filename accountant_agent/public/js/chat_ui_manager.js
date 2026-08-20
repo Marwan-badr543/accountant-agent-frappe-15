@@ -74,9 +74,6 @@ class ChatUIManager {
 			let status = data.status || 'pending';
 			let parsed_markdown = this.parse_markdown(plan_text);
 
-			let status_class = `status-${status}`;
-			let badge_label = status.toUpperCase();
-
 			let header_id = `plan-hdr-${this.chat.generate_uuid()}`;
 			let body_id = `plan-body-${this.chat.generate_uuid()}`;
 			let container_id = `plan-container-${this.chat.generate_uuid()}`;
@@ -100,7 +97,6 @@ class ChatUIManager {
 						<div class="plan-title-wrapper">
 							<i class="fa fa-list-alt" style="color: var(--chat-primary);"></i>
 							<span>${__('Proposed Execution Plan')}</span>
-							<span class="plan-status-badge ${status_class}">${badge_label}</span>
 						</div>
 						<i class="fa fa-chevron-down plan-caret-icon"></i>
 					</div>

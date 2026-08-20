@@ -26,8 +26,8 @@ class ChatUIManager {
 					<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
 						<defs>
 							<linearGradient id="robotGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-								<stop offset="0%" stop-color="#10a37f" />
-								<stop offset="100%" stop-color="#0d8a6a" />
+								<stop offset="0%" stop-color="#4f46e5" />
+								<stop offset="100%" stop-color="#6366f1" />
 							</linearGradient>
 						</defs>
 						<rect x="8" y="16" width="48" height="36" rx="10" fill="url(#robotGrad)" />
@@ -45,9 +45,56 @@ class ChatUIManager {
 				<p class="text-muted" style="max-width: 440px; margin: 0 auto; font-size: 14px; line-height: 1.5;">
 					${__('Select your agent mode (Ask, Analyse, or Audit) and upload financial documents or ask questions directly.')}
 				</p>
+				<div class="agent-suggestions-grid">
+					<div class="agent-suggestion-card" data-prompt="${__('Compare bank statements and ledger entries to find any discrepancies.')}">
+						<div class="agent-suggestion-card-header">
+							<i class="fa fa-balance-scale"></i>
+							${__('Reconcile bank entries')}
+						</div>
+						<div class="agent-suggestion-card-desc">
+							${__('Compare bank statements and ledger entries to find any discrepancies.')}
+						</div>
+					</div>
+					<div class="agent-suggestion-card" data-prompt="${__('Provide a complete summary of our cash flow status and highlight any liquidity risks.')}">
+						<div class="agent-suggestion-card-header">
+							<i class="fa fa-bar-chart"></i>
+							${__('Analyze Cash Flow')}
+						</div>
+						<div class="agent-suggestion-card-desc">
+							${__('Provide a complete summary of our cash flow status and highlight any liquidity risks.')}
+						</div>
+					</div>
+					<div class="agent-suggestion-card" data-prompt="${__('Run an audit check on all expenses from the past 30 days and flag any policy violations.')}">
+						<div class="agent-suggestion-card-header">
+							<i class="fa fa-shield"></i>
+							${__('Audit recent expenses')}
+						</div>
+						<div class="agent-suggestion-card-desc">
+							${__('Run an audit check on all expenses from the past 30 days and flag any policy violations.')}
+						</div>
+					</div>
+					<div class="agent-suggestion-card" data-prompt="${__('Can you list all outstanding invoices that are overdue and calculate the total amount?')}">
+						<div class="agent-suggestion-card-header">
+							<i class="fa fa-file-text-o"></i>
+							${__('Overdue Invoices')}
+						</div>
+						<div class="agent-suggestion-card-desc">
+							${__('Can you list all outstanding invoices that are overdue and calculate the total amount?')}
+						</div>
+					</div>
+				</div>
 			</div>
 		`;
 		msg_box.append(welcome_html);
+
+		// Bind events to the suggestion cards
+		let self = this;
+		msg_box.find('.agent-suggestion-card').on('click', function(e) {
+			let prompt = $(this).data('prompt');
+			self.chat.textarea.val(prompt);
+			self.chat.textarea.trigger('input');
+			self.chat.textarea.focus();
+		});
 	}
 
 	format_time(datetime_str) {
@@ -74,9 +121,6 @@ class ChatUIManager {
 			let status = data.status || 'pending';
 			let parsed_markdown = this.parse_markdown(plan_text);
 
-			let status_class = `status-${status}`;
-			let badge_label = status.toUpperCase();
-
 			let header_id = `plan-hdr-${this.chat.generate_uuid()}`;
 			let body_id = `plan-body-${this.chat.generate_uuid()}`;
 			let container_id = `plan-container-${this.chat.generate_uuid()}`;
@@ -100,7 +144,6 @@ class ChatUIManager {
 						<div class="plan-title-wrapper">
 							<i class="fa fa-list-alt" style="color: var(--chat-primary);"></i>
 							<span>${__('Proposed Execution Plan')}</span>
-							<span class="plan-status-badge ${status_class}">${badge_label}</span>
 						</div>
 						<i class="fa fa-chevron-down plan-caret-icon"></i>
 					</div>

@@ -529,6 +529,13 @@ class AccountantAgentChat {
 							</div>
 						</div>
 						<div class="agent-header-actions" style="display: flex; align-items: center; gap: 12px;">
+							<select class="agent-lang-selector form-control" style="width: 100px; padding: 2px 6px; height: 28px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; background-color: var(--chat-card-bg); color: var(--chat-text); border: 1px solid var(--chat-border);">
+								<option value="en" ${frappe.boot.lang === 'en' ? 'selected' : ''}>English</option>
+								<option value="ar" ${frappe.boot.lang === 'ar' ? 'selected' : ''}>العربية</option>
+							</select>
+							<button class="agent-theme-toggle-btn btn btn-xs btn-default" style="display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border-radius: 6px;" title="${__('Toggle Theme')}">
+								<i class="fa fa-moon-o"></i>
+							</button>
 							<button class="agent-settings-btn btn btn-xs btn-default" style="display: flex; align-items: center; gap: 4px; padding: 5px 10px; border-radius: 6px;">
 								<i class="fa fa-cog"></i> ${__('Settings')}
 							</button>
@@ -539,19 +546,23 @@ class AccountantAgentChat {
 					<div class="agent-messages-container" id="agent-msg-box"></div>
 					
 					<!-- Input Area -->
-					<div class="agent-input-container" style="flex-direction: column; align-items: stretch; gap: 8px; position: relative;">
+					<div class="agent-input-container">
 						<div class="agent-clarification-popup" style="display: none;"></div>
-						<div style="display: flex; gap: 15px; align-items: flex-end; width: 100%;">
-							<div class="agent-selector-container"></div>
+						<div class="agent-input-card">
 							<textarea class="agent-textarea" placeholder="${__('Type your financial question or query here...')}" id="agent-input-msg" maxlength="10000"></textarea>
-							<button class="agent-send-btn" id="agent-send-trigger" title="${__('Send Message')}">
-								<svg viewBox="0 0 24 24">
-									<path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-								</svg>
-							</button>
-						</div>
-						<div class="agent-char-counter" style="align-self: flex-end; font-size: 11px; color: var(--chat-text-muted); margin-right: 61px;">
-							0 / 10000
+							<div class="agent-input-footer">
+								<div class="agent-input-footer-left">
+									<div class="agent-selector-container"></div>
+								</div>
+								<div class="agent-input-footer-right">
+									<div class="agent-char-counter">0 / 10000</div>
+									<button class="agent-send-btn" id="agent-send-trigger" title="${__('Send Message')}">
+										<svg viewBox="0 0 24 24">
+											<path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+										</svg>
+									</button>
+								</div>
+							</div>
 						</div>
 					</div>
 				</div>
@@ -712,6 +723,46 @@ class AccountantAgentChat {
 				this.message_handler.send_user_message();
 			}
 		});
+
+		this.layout.find('.agent-lang-selector').on('change', (e) => {
+			let selected_lang = $(e.target).val();
+			frappe.call({
+				method: "frappe.client.set_value",
+				args: {
+					doctype: "User",
+					name: frappe.session.user,
+					fieldname: "language",
+					value: selected_lang
+				},
+				callback: function(r) {
+					if (!r.exc) {
+						window.location.reload();
+					}
+				}
+			});
+		});
+
+		// Theme Toggle Handler
+		let theme_toggle = this.layout.find('.agent-theme-toggle-btn');
+		let current_theme = document.documentElement.getAttribute('data-theme') || localStorage.getItem('agent-theme') || 'light';
+		document.documentElement.setAttribute('data-theme', current_theme);
+		update_theme_icon(current_theme);
+
+		theme_toggle.on('click', () => {
+			let new_theme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+			document.documentElement.setAttribute('data-theme', new_theme);
+			localStorage.setItem('agent-theme', new_theme);
+			update_theme_icon(new_theme);
+		});
+
+		function update_theme_icon(theme) {
+			let icon = theme_toggle.find('i');
+			if (theme === 'dark') {
+				icon.removeClass('fa-moon-o').addClass('fa-sun-o');
+			} else {
+				icon.removeClass('fa-sun-o').addClass('fa-moon-o');
+			}
+		}
 	}
 
 	show_clarification_popup(questions) {

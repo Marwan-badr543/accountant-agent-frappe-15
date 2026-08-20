@@ -28,14 +28,44 @@ class FileUploadHandler {
 		// Processing lock
 		this.is_processing = false;
 
-		// Safe accountant file extensions whitelist
+		// Every document, data and image type an accountant legitimately
+		// sends, and nothing that carries executable code.
+		//
+		// This list MUST stay in step with ALLOWED_ACCOUNTANT_EXTENSIONS in
+		// agent_chat.py. That is the one that actually protects the server;
+		// this one exists so the file picker filters sensibly and a refusal
+		// happens before a 100 MB upload rather than after it.
+		//
+		// Deliberately absent: source and script files, executables, and
+		// macro-enabled Office formats (.xlsm .xlsb .docm .pptm), which are
+		// spreadsheets that run code when opened. Also absent is markup a
+		// browser executes (.html .svg), because rendering is execution.
 		this.ALLOWED_EXTENSIONS = new Set([
-			'.pdf', '.docx', '.doc', '.xlsx', '.xls', '.csv', '.txt',
-			'.pptx', '.ppt', '.png', '.jpg', '.jpeg', '.gif', '.webp'
+			// Portable documents and word processing
+			'.pdf', '.doc', '.docx', '.odt', '.rtf',
+			// Spreadsheets, macro-free
+			'.xls', '.xlsx', '.ods',
+			// Presentations
+			'.ppt', '.pptx', '.odp',
+			// Plain text, notes and structured data
+			'.txt', '.md', '.markdown', '.rst', '.log', '.csv', '.tsv', '.psv',
+			'.json', '.jsonl', '.ndjson', '.yaml', '.yml', '.toml', '.ini',
+			'.cfg', '.conf', '.xml',
+			// Accounting and banking interchange formats
+			'.ofx', '.qfx', '.qbo', '.qif', '.mt940', '.sta', '.camt', '.aba',
+			'.bai', '.bai2', '.edi', '.x12', '.iif', '.xbrl', '.ubl', '.dat',
+			// Correspondence attached as evidence
+			'.eml', '.msg', '.mbox', '.ics', '.vcf',
+			// Images and scans
+			'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff',
+			'.heic', '.heif', '.avif'
 		]);
 
-		this.EXCEL_EXTENSIONS = new Set(['.xlsx', '.xls']);
-		this.IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+		this.EXCEL_EXTENSIONS = new Set(['.xlsx', '.xls', '.ods']);
+		this.IMAGE_EXTENSIONS = new Set([
+			'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff',
+			'.heic', '.heif', '.avif'
+		]);
 	}
 
 	// ─── Initialization ────────────────────────────────────────────────────

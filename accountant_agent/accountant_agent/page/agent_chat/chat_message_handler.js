@@ -168,7 +168,9 @@ class ChatMessageHandler {
 		}
 
 		this.processing_sessions.add(active_session_id);
-		let agent_type = this.chat.agent_selector ? this.chat.agent_selector.get_selected_agent() : 'ask';
+		// Falls back to 'auto', never to a named desk: without a selector the
+		// server should choose, not be told the general Q&A desk was asked for.
+		let agent_type = this.chat.agent_selector ? this.chat.agent_selector.get_selected_agent() : 'auto';
 
 		try {
 			let agent_email = localStorage.getItem('connected_agent_email');

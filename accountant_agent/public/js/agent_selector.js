@@ -14,22 +14,46 @@
 
 class AgentSelector {
 	constructor(options = {}) {
-		this.selected_agent = options.default_agent || 'ask'; // 'ask', 'analyse', 'audit', 'reconcile', or 'create'
+		// 'auto' means the router reads the question and picks the desk. The
+		// other values name a desk explicitly and are honoured as given.
+		this.selected_agent = options.default_agent || 'auto';
 		this.on_change = options.on_change || null;
 		this.$container = null;
 
 		this.AGENT_DEFINITIONS = {
-			ask: {
-				id: 'ask',
+			// Auto is a routing instruction, not a desk. It is sent to the
+			// server as 'auto', which is the ONLY value that makes the router
+			// classify the question instead of honouring a chosen desk.
+			//
+			// This entry used to be the 'ask' desk wearing the label "Auto",
+			// so choosing it asked the server for the general Q&A desk by
+			// name and no routing ever happened. Its budgets are the most
+			// generous of any desk, because the question may end up anywhere.
+			auto: {
+				id: 'auto',
 				name: __('Auto'),
 				icon: 'fa-magic',
 				badge_class: 'agent-type-ask',
-				description: __('Quick Q&A. Max 5 files, up to 1 MB per file.'),
+				description: __("I'll read your question and bring in the right specialist."),
+				rules: {
+					max_files: 8,
+					max_per_file_mb: 40,
+					max_non_excel_total_mb: 40,
+					max_excel_total_mb: 80,
+					is_aggregate: true
+				}
+			},
+			ask: {
+				id: 'ask',
+				name: __('General Q&A'),
+				icon: 'fa-comments',
+				badge_class: 'agent-type-ask',
+				description: __('Quick accounting questions and document look-ups.'),
 				rules: {
 					max_files: 5,
-					max_per_file_mb: 1,
-					max_non_excel_total_mb: 1,
-					max_excel_total_mb: 1,
+					max_per_file_mb: 20,
+					max_non_excel_total_mb: 20,
+					max_excel_total_mb: 20,
 					is_aggregate: false
 				}
 			},

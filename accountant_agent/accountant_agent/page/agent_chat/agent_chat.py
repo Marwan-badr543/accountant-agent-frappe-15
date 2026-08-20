@@ -325,7 +325,7 @@ def post_message_to_agent(
 	token: str,
 	custom_instructions: str = None,
 	session_id: str = None,
-	agent_type: str = "ask",
+	agent_type: str = "auto",
 	file_urls: list = None,
 	history: list = None,
 ) -> requests.Response:
@@ -340,7 +340,7 @@ def post_message_to_agent(
 		"history": history_json,
 		"custom_instructions": custom_instructions or "",
 		"session_id": session_id or "",
-		"selected_agent": agent_type or "ask",
+		"selected_agent": agent_type or "auto",
 	}
 
 	files_list = []
@@ -370,7 +370,7 @@ def post_message_to_agent(
 			data=payload_data,
 			files=files_list if files_list else None,
 			headers=headers,
-			timeout=180,
+			timeout=AGENT_STREAM_TIMEOUT,
 		)
 	finally:
 		for f in opened_files:
@@ -498,7 +498,7 @@ def get_latest_plan_message(session_id: str, lock: bool = False):
 
 
 @frappe.whitelist()
-def send_message(message, session_id, agent_email, agent_type="ask", file_urls=None):
+def send_message(message, session_id, agent_email, agent_type="auto", file_urls=None):
 	"""Proxy message send to agent by enqueuing a background worker to handle streaming."""
 	user = _assert_signed_in()
 	assert_owns_session(session_id)
@@ -539,7 +539,7 @@ def send_message(message, session_id, agent_email, agent_type="ask", file_urls=N
 	frappe.enqueue(
 		"accountant_agent.accountant_agent.page.agent_chat.agent_chat.process_agent_message_background",
 		queue="long",
-		timeout=600,
+		timeout=AGENT_TASK_TIMEOUT_SECONDS,
 		message=message,
 		session_id=session_id,
 		agent_email=agent_email,
@@ -601,7 +601,7 @@ def process_agent_message_background(
 		"session_id": session_id or "",
 		"erp_system": "ERPNext",
 		"stream": "true",
-		"selected_agent": agent_type or "ask",
+		"selected_agent": agent_type or "auto",
 	}
 
 	files_list = []
@@ -631,7 +631,7 @@ def process_agent_message_background(
 			files=files_list if files_list else None,
 			headers=headers,
 			stream=True,
-			timeout=600,
+			timeout=AGENT_STREAM_TIMEOUT,
 		)
 
 		if response.status_code == 401:
@@ -650,7 +650,7 @@ def process_agent_message_background(
 					files=files_list if files_list else None,
 					headers=headers,
 					stream=True,
-					timeout=600,
+					timeout=AGENT_STREAM_TIMEOUT,
 				)
 			else:
 				save_agent_settings(agent_email, access_token="")
@@ -743,6 +743,19 @@ def process_agent_message_background(
 						message={"session_id": session_id, "response": ai_response},
 						user=user,
 					)
+
+					# A pause that is a QUESTION opens the answer picker
+					# directly, rather than relying on the transcript renderer
+					# noticing the payload type. The agent is waiting on a
+					# person; the options it offered should be in front of them
+					# straight away.
+					questions = _clarification_questions(ai_response)
+					if questions:
+						frappe.publish_realtime(
+							event="agent_clarification_requested",
+							message={"session_id": session_id, "questions": questions},
+							user=user,
+						)
 				elif current_event == "error":
 					raise Exception(data_json.get("detail", "Unknown error in stream"))
 
@@ -762,6 +775,26 @@ def process_agent_message_background(
 				f.close()
 			except Exception:
 				pass
+
+
+def _clarification_questions(ai_response: str) -> list:
+	"""The questions an agent is waiting on, or an empty list.
+
+	An agent pauses either to have something approved or to ask something. Only
+	the second should open the answer picker, and the payload says which it is.
+	Anything unparseable is treated as "not a question", because showing a
+	spurious popup over a finished report is worse than showing none.
+	"""
+	if not ai_response or not ai_response.lstrip().startswith("{"):
+		return []
+	try:
+		payload = json.loads(ai_response)
+	except (ValueError, TypeError):
+		return []
+	if not isinstance(payload, dict) or payload.get("type") != "clarification":
+		return []
+	questions = payload.get("questions")
+	return questions if isinstance(questions, list) else []
 
 
 @frappe.whitelist()
@@ -1047,12 +1080,78 @@ def _parse_json_list(value) -> list | None:
 # ─── Agent File Upload Endpoint ─────────────────────────────────────────────
 
 AGENT_UPLOAD_DIR: str = "agent_uploads"
-MAX_UPLOAD_SIZE_BYTES: int = 20 * 1024 * 1024  # 20 MB endpoint cap to support Excel uploads
+#: How long a single agent request may take, end to end.
+#:
+#: A customer can legitimately ask for something that runs for hours - a
+#: reconciliation across a full year, an import of several hundred entries, an
+#: audit sweep over a large ledger. Cutting that off at ten minutes does not
+#: protect anything; it destroys work that was progressing normally and gives
+#: the customer a timeout error to explain.
+AGENT_TASK_TIMEOUT_SECONDS: int = 3 * 60 * 60      # 3 hours
+
+#: Splitting connect from read is the point.
+#:
+#: Failing to REACH the server is immediate and worth reporting quickly, so the
+#: connect budget stays short. Once connected, a gap between chunks means the
+#: agent is thinking, or the customer is on a slow link - neither is an error,
+#: and `requests` applies the read budget per chunk rather than to the whole
+#: response. A single number forces one of the two to be wrong.
+AGENT_CONNECT_TIMEOUT_SECONDS: int = 30
+AGENT_STREAM_TIMEOUT: tuple[int, int] = (
+	AGENT_CONNECT_TIMEOUT_SECONDS,
+	AGENT_TASK_TIMEOUT_SECONDS,
+)
+
+MAX_UPLOAD_SIZE_BYTES: int = 100 * 1024 * 1024  # 100 MB: full-year ledger exports are large
+
+#: Every document, data and image type an accountant legitimately sends, and
+#: nothing that carries executable code.
+#:
+#: WHY AN ALLOWLIST AND NOT A BLOCKLIST
+#:     A blocklist must be right about every dangerous extension that exists,
+#:     including the ones invented after this line was written. An allowlist
+#:     must be right about the ones we accept. Only the second is a property
+#:     this code can actually hold. The set is therefore deliberately broad -
+#:     the goal is that a real accountant never meets a refusal - but it stays
+#:     a closed set, and anything not named here is declined.
+#:
+#: WHAT IS DELIBERATELY ABSENT, AND WHY
+#:     Source and script files (.py .js .sh .php .rb .pl .ps1 .bat .cmd .vbs),
+#:     executables and libraries (.exe .dll .so .msi .jar .apk .bin), and
+#:     macro-enabled Office formats (.xlsm .xlsb .docm .pptm) - a workbook does
+#:     not need a macro to be read, and a file that runs is not a document.
+#:     Markup a browser will execute (.html .svg .xhtml .hta) is excluded for
+#:     the same reason: these are rendered, and rendering is execution.
+#:
+#:     Archives (.zip .7z .rar) are absent for a different reason - the agent
+#:     cannot read inside one, so accepting it would mean an upload that
+#:     succeeds and then cannot be used, plus a decompression surface to
+#:     defend. Supporting them properly means bounded extraction, and that is
+#:     a feature rather than a line in a set.
 ALLOWED_ACCOUNTANT_EXTENSIONS: frozenset[str] = frozenset({
-	".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".txt",
-	".pptx", ".ppt", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+	# Portable documents and word processing
+	".pdf", ".doc", ".docx", ".odt", ".rtf",
+	# Spreadsheets, macro-free
+	".xls", ".xlsx", ".ods",
+	# Presentations
+	".ppt", ".pptx", ".odp",
+	# Plain text, notes and structured data
+	".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".psv",
+	".json", ".jsonl", ".ndjson", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+	".conf", ".xml",
+	# Accounting and banking interchange formats
+	".ofx", ".qfx", ".qbo", ".qif", ".mt940", ".sta", ".camt", ".aba",
+	".bai", ".bai2", ".edi", ".x12", ".iif", ".xbrl", ".ubl", ".dat",
+	# Correspondence an accountant attaches as evidence
+	".eml", ".msg", ".mbox", ".ics", ".vcf",
+	# Images and scans
+	".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
+	".heic", ".heif", ".avif",
 })
-_IMAGE_EXTENSIONS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
+_IMAGE_EXTENSIONS: frozenset[str] = frozenset({
+	".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
+	".heic", ".heif", ".avif",
+})
 
 #: The whitelisted route every stored attachment URL points at. Storing the
 #: endpoint rather than a filesystem path is what lets the file itself live in
