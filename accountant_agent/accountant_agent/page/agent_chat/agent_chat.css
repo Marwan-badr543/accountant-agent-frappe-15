@@ -177,6 +177,12 @@
 	font-family: var(--font-mono) !important;
 }
 
+/* Prevent horizontal scroll on the agent-chat page wrapper */
+[data-page-route="agent-chat"],
+#page-agent-chat {
+	overflow-x: hidden !important;
+}
+
 /* Override default Frappe page layout limits for agent-chat page to make it full screen */
 [data-page-route="agent-chat"] .layout-main-section,
 [data-page-route="agent-chat"] .page-container,
@@ -193,7 +199,7 @@
 #page-agent-chat .container,
 #page-agent-chat .col-md-12 {
 	max-width: 100% !important;
-	width: 100% !important;
+	width: auto !important;
 	padding-left: 0 !important;
 	padding-right: 0 !important;
 	margin-left: 0 !important;
