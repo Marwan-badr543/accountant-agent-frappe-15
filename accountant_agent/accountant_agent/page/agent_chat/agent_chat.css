@@ -177,11 +177,7 @@
 	font-family: var(--font-mono) !important;
 }
 
-/* Prevent horizontal and vertical scroll on the agent-chat page wrapper */
-[data-page-route="agent-chat"],
-#page-agent-chat {
-	overflow: hidden !important;
-}
+
 
 /* Override default Frappe page layout limits for agent-chat page to make it full screen */
 [data-page-route="agent-chat"] .layout-main-section,
