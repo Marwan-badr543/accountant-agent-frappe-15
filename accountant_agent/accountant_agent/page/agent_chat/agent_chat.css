@@ -163,7 +163,7 @@
 .agent-chat-container {
 	display: flex;
 	flex-direction: column;
-	height: calc(100vh - 130px);
+	height: calc(100vh - 165px);
 	max-width: 100%;
 	margin: 15px;
 	padding: 10px;
@@ -177,10 +177,10 @@
 	font-family: var(--font-mono) !important;
 }
 
-/* Prevent horizontal scroll on the agent-chat page wrapper */
+/* Prevent horizontal and vertical scroll on the agent-chat page wrapper */
 [data-page-route="agent-chat"],
 #page-agent-chat {
-	overflow-x: hidden !important;
+	overflow: hidden !important;
 }
 
 /* Override default Frappe page layout limits for agent-chat page to make it full screen */
