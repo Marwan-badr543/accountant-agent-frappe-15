@@ -516,8 +516,17 @@ _REF_KIND_SPEC: dict[str, dict] = {
         "doctype": "Account",
         "search_fields": ("name", "account_name", "account_number"),
         "display_fields": ("name", "account_name", "account_number", "root_type",
-                           "account_type", "company", "account_currency"),
-        "base_filters": {"disabled": 0, "is_group": 0},
+                           "account_type", "company", "account_currency",
+                           "is_group", "lft", "rgt"),
+        # NOTE: is_group is deliberately NOT filtered here. See _expand_group_accounts.
+        # Excluding groups at the query made the agent answer "I could not find
+        # anything called '1100 - Cash In Hand - MC' in your system" about an
+        # account that exists - it is simply a parent, and you cannot post to a
+        # parent. Telling a customer their own account does not exist is worse
+        # than telling them it is not postable, so the group is found, then
+        # replaced by the postable children underneath it.
+        "base_filters": {"disabled": 0},
+        "postable_only": True,
     },
     "PARTY_CUSTOMER": {
         "doctype": "Customer",
@@ -624,22 +633,35 @@ def _search_one_reference(ref: dict, limit: int) -> dict:
     }
     filters.update(_context_filters(context, available))
 
-    or_filters = (
-        [[field, "like", f"%{raw_value}%"] for field in search_fields]
-        if raw_value
-        else None
+    offset = int(ref.get("offset") or 0)
+    scan_limit = min(limit, MAX_CANDIDATE_SCAN)
+
+    total, rows, or_filters = _search_with_widening(
+        doctype=target_doctype,
+        raw_value=raw_value,
+        search_fields=search_fields,
+        display_fields=display_fields,
+        filters=filters,
+        limit=scan_limit,
+        offset=offset,
     )
 
-    total = count_link_candidates(target_doctype, filters, or_filters)
-    rows = search_link_candidates(
-        doctype=target_doctype,
-        filters=filters,
-        or_filters=or_filters,
-        fields=display_fields,
-        limit=min(limit, MAX_CANDIDATE_SCAN),
-        offset=int(ref.get("offset") or 0),
-        order_by="name asc",
-    )
+    # Whether the SEARCH ran out of room, decided before the postable-account
+    # substitution below can change how many rows there are.
+    truncated = total > len(rows)
+
+    if (spec or {}).get("postable_only"):
+        rows = _expand_group_accounts(rows, filters, display_fields, scan_limit)
+        # Replacing a group with its postable children changes WHICH rows come
+        # back, never how many the search found. Recounting truncation here made
+        # an ordinary search look truncated: "Cash" matches the parent
+        # "1100 - Cash In Hand" and the child "1110 - Cash", the parent is then
+        # replaced by that same child, and two-matched-one-returned was reported
+        # as a truncated result. The agent will not auto-bind a single candidate
+        # out of a truncated set — one match in a truncated page is not one match
+        # in the ledger — so it asked "which of these did you mean?" with exactly
+        # one option underneath it.
+        total = max(total, len(rows)) if truncated else len(rows)
 
     return {
         "ref_id": ref_id,
@@ -649,9 +671,174 @@ def _search_one_reference(ref: dict, limit: int) -> dict:
             for row in rows
         ],
         "total_matched": total,
-        "truncated": total > len(rows),
-        "next_offset": (int(ref.get("offset") or 0) + len(rows)) if total > len(rows) else None,
+        "truncated": truncated,
+        "next_offset": (offset + len(rows)) if truncated else None,
     }
+
+
+#: Characters an accountant's keyboard, an email client or a copied statement
+#: substitutes for the plain hyphen ERPNext builds account names with. Every one
+#: of these has been seen in a real request.
+_SEPARATOR_CHARS = "-\u2010\u2011\u2012\u2013\u2014\u2015\u2212_/\\|,.:;()[]{}"
+
+_SEPARATOR_RUN = re.compile(f"[{re.escape(_SEPARATOR_CHARS)}\\s]+")
+
+#: A token shorter than this carries no discriminating power on its own
+#: ("in", "of", the "MC" company suffix) and is dropped before the last resort.
+_MIN_DISTINCTIVE_TOKEN: int = 3
+
+
+def _like_patterns(raw_value: str) -> list[str]:
+    """The widening ladder of LIKE patterns for one raw value, best first.
+
+    THE DEFECT THIS CLOSES
+        The search was a single `LIKE '%<the whole raw value>%'`. An accountant
+        who typed - or whose mail client autocorrected - an en dash asked for
+
+            "1100 \u2013 Cash In Hand \u2013 MC"
+
+        while the ERP stores
+
+            "1100 - Cash In Hand - MC"
+
+        and `LIKE '%1100 \u2013 Cash In Hand \u2013 MC%'` matches nothing. Measured
+        against the live v15 chart of accounts: the en dash alone took the
+        result set from 2 rows to 0. The agent then reported the account did not
+        exist. Every separator variance - en dash, em dash, slash, double
+        space - failed the same way, silently, and looked like the agent being
+        unable to read the customer's books.
+
+    THE LADDER
+        1. the value as written                     - exact intent, fastest
+        2. tokens joined by wildcards               - separator-blind, order-preserving
+        3. distinctive tokens only, wildcard-joined - drops "in"/"of"/company abbr
+        4. the single longest token                 - last resort before giving up
+
+    Rung 2 is what fixes the reported bug and it costs one query, not one per
+    token: `%1100%Cash%In%Hand%MC%` matches the stored name whatever sits
+    between the words. Later rungs only ever run when the earlier ones returned
+    nothing, so the common case is still a single round trip.
+    """
+    value = (raw_value or "").strip()
+    if not value:
+        return []
+
+    patterns: list[str] = [f"%{value}%"]
+
+    tokens = [t for t in _SEPARATOR_RUN.split(value) if t]
+    if len(tokens) > 1:
+        joined = "%" + "%".join(tokens) + "%"
+        if joined not in patterns:
+            patterns.append(joined)
+
+    distinctive = [t for t in tokens if len(t) >= _MIN_DISTINCTIVE_TOKEN]
+    if distinctive and len(distinctive) != len(tokens):
+        joined = "%" + "%".join(distinctive) + "%"
+        if joined not in patterns:
+            patterns.append(joined)
+
+    if tokens:
+        longest = max(tokens, key=len)
+        if len(longest) >= _MIN_DISTINCTIVE_TOKEN:
+            single = f"%{longest}%"
+            if single not in patterns:
+                patterns.append(single)
+
+    return patterns
+
+
+def _search_with_widening(
+    doctype: str,
+    raw_value: str,
+    search_fields: Sequence[str],
+    display_fields: Sequence[str],
+    filters: dict,
+    limit: int,
+    offset: int,
+) -> tuple[int, list[dict], Optional[list]]:
+    """Walk the LIKE ladder, stopping at the first rung that matches anything.
+
+    Returns (total_matched, rows, or_filters_used). An empty raw value means
+    "show me the pool", which is a legitimate request and is answered with the
+    unfiltered - but still permission-filtered - first page.
+    """
+    patterns = _like_patterns(raw_value)
+    if not patterns:
+        total = count_link_candidates(doctype, filters, None)
+        rows = search_link_candidates(
+            doctype=doctype, filters=filters, or_filters=None,
+            fields=list(display_fields), limit=limit, offset=offset,
+            order_by="name asc",
+        )
+        return total, rows, None
+
+    for pattern in patterns:
+        or_filters = [[field, "like", pattern] for field in search_fields]
+        rows = search_link_candidates(
+            doctype=doctype, filters=filters, or_filters=or_filters,
+            fields=list(display_fields), limit=limit, offset=offset,
+            order_by="name asc",
+        )
+        if rows:
+            return count_link_candidates(doctype, filters, or_filters), rows, or_filters
+
+    return 0, [], None
+
+
+def _expand_group_accounts(
+    rows: list[dict], filters: dict, display_fields: Sequence[str], limit: int
+) -> list[dict]:
+    """Replace any matched parent account with the postable accounts beneath it.
+
+    You cannot post to a group account, so a group can never be the answer. It
+    is still the thing the customer named, and the useful response to "1100 -
+    Cash In Hand - MC" is not silence but "that is a parent; underneath it you
+    can post to 1110 - Cash - MC".
+
+    Descendants come from the nested set (lft/rgt), which is one query for the
+    whole expansion rather than one per group, and reads the same tree ERPNext
+    itself walks. Permission filtering is unchanged: the descendants go through
+    get_list exactly as the parents did, so an agent restricted to one company
+    cannot be handed another company's child account.
+    """
+    groups = [r for r in rows if r.get("is_group")]
+    if not groups:
+        return rows
+
+    postable = [r for r in rows if not r.get("is_group")]
+    seen = {r.get("name") for r in postable}
+
+    for group in groups:
+        lft, rgt = group.get("lft"), group.get("rgt")
+        if lft is None or rgt is None:
+            continue
+        remaining = limit - len(postable)
+        if remaining <= 0:
+            break
+        # AND, not OR. The two bounds describe one interval; as or_filters they
+        # would read "anywhere left of rgt OR anywhere right of lft", which is
+        # the entire chart of accounts.
+        descendant_filters: list[list] = [[key, "=", value] for key, value in filters.items()]
+        descendant_filters += [
+            ["is_group", "=", 0],
+            ["lft", ">", lft],
+            ["lft", "<", rgt],
+        ]
+        children = search_link_candidates(
+            doctype="Account",
+            filters=descendant_filters,
+            or_filters=None,
+            fields=list(display_fields),
+            limit=remaining,
+            offset=0,
+            order_by="name asc",
+        )
+        for child in children:
+            if child.get("name") not in seen:
+                seen.add(child.get("name"))
+                postable.append(child)
+
+    return postable
 
 
 def _context_filters(context: dict, available: set[str]) -> dict:

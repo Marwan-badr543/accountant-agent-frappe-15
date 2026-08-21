@@ -286,7 +286,7 @@ def has_server_script(doctype: str) -> bool:
 
 def search_link_candidates(
     doctype: str,
-    filters: dict,
+    filters: dict | list,
     or_filters: Optional[list],
     fields: list[str],
     limit: int,
@@ -317,7 +317,7 @@ def search_link_candidates(
 
 
 def count_link_candidates(
-    doctype: str, filters: dict, or_filters: Optional[list]
+    doctype: str, filters: dict | list, or_filters: Optional[list]
 ) -> int:
     """How many records actually match, so truncation is never silent."""
     rows = frappe.get_list(

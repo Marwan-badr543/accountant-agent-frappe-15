@@ -52,11 +52,11 @@ def _extract_api_key(explicit_value: str | None = None) -> str | None:
 	)
 
 
-def _extract_param(explicit_value: str | None, param_name: str) -> str | None:
+def _extract_param(explicit_value: list | str | None, param_name: str) -> list | str | None:
 	"""
 	Extract a parameter from the explicit value or fall back to form data.
 	"""
-	if explicit_value:
+	if explicit_value is not None:
 		return explicit_value
 	return frappe.form_dict.get(param_name)
 
@@ -130,7 +130,7 @@ def get_doctype_schema(doctype: str | None = None, api_key: str | None = None) -
 @frappe.whitelist(allow_guest=True)
 def request_clarification(
 	session_id: str | None = None,
-	questions: str | None = None,
+	questions: list | str | None = None,
 	api_key: str | None = None,
 ) -> dict:
 	"""

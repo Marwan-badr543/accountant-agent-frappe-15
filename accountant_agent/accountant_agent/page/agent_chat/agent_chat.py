@@ -1128,32 +1128,49 @@ MAX_UPLOAD_SIZE_BYTES: int = 100 * 1024 * 1024  # 100 MB: full-year ledger expor
 #:     succeeds and then cannot be used, plus a decompression surface to
 #:     defend. Supporting them properly means bounded extraction, and that is
 #:     a feature rather than a line in a set.
+#:
+#: THIS SET MUST EQUAL THE SERVER'S, AND FOR A WHILE IT DID NOT
+#:     The picker only decides what the file dialog offers. The refusal that
+#:     matters is `file_text_receiver.ALLOWED_EXTENSIONS` on the agent platform,
+#:     and an extension offered here but absent there is not a lenient picker -
+#:     it is an accountant choosing a file, waiting for the upload, and then
+#:     being told it is not supported.
+#:
+#:     That is exactly what shipped. Archive support (`extract_archive`) was
+#:     built, .zip was added here citing it, and the extraction path was later
+#:     removed from the platform - the function no longer exists and its test
+#:     was deleted - while this set kept advertising it. Twenty-four extensions
+#:     drifted apart the same way: .doc .xls .ppt .rtf, the config-text formats
+#:     (.log .yaml .yml .toml .ini .cfg .conf .rst), mail (.eml .msg .mbox .ics
+#:     .vcf) and the images the vision path cannot decode (.bmp .tif .tiff
+#:     .heic .heif .avif).
+#:
+#:     Legacy Office binaries (.doc .xls .ppt) are not an oversight in the
+#:     platform's list: the modern container is XML and macro-free, the 1997
+#:     binary is neither. Send .docx/.xlsx/.pptx.
+#:
+#:     api/tests/test_upload_types.py::test_the_picker_and_the_server_agree
+#:     compares the two sets and fails if they ever separate again.
 ALLOWED_ACCOUNTANT_EXTENSIONS: frozenset[str] = frozenset({
-	# Portable documents and word processing
-	".pdf", ".doc", ".docx", ".odt", ".rtf",
-	# Spreadsheets, macro-free
-	".xls", ".xlsx", ".ods",
-	# Presentations
-	".ppt", ".pptx", ".odp",
+	# Portable documents and word processing, macro-free formats only
+	".pdf", ".docx", ".odt",
+	# Spreadsheets, macro-free formats only
+	".xlsx", ".ods",
+	# Presentations, macro-free formats only
+	".pptx", ".odp",
 	# Plain text, notes and structured data
-	".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".psv",
-	".json", ".jsonl", ".ndjson", ".yaml", ".yml", ".toml", ".ini", ".cfg",
-	".conf", ".xml",
+	".txt", ".md", ".markdown", ".csv", ".tsv", ".psv", ".dat",
+	".json", ".jsonl", ".ndjson", ".xml",
 	# Accounting and banking interchange formats
 	".ofx", ".qfx", ".qbo", ".qif", ".mt940", ".sta", ".camt", ".aba",
-	".bai", ".bai2", ".edi", ".x12", ".iif", ".xbrl", ".ubl", ".dat",
-	# Correspondence an accountant attaches as evidence
-	".eml", ".msg", ".mbox", ".ics", ".vcf",
-	# Images and scans
-	".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
-	".heic", ".heif", ".avif",
-	# Archives are unpacked by the agent server on arrival, and only the
-	# permitted types inside them survive that. See extract_archive.
-	".zip",
+	".bai", ".bai2", ".edi", ".x12", ".iif", ".xbrl", ".ubl",
+	# Scans and photographed receipts. Exactly the set the platform's vision
+	# path decodes - an image accepted here but absent there is stored and
+	# then silently unreadable.
+	".png", ".jpg", ".jpeg", ".gif", ".webp",
 })
 _IMAGE_EXTENSIONS: frozenset[str] = frozenset({
-	".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
-	".heic", ".heif", ".avif",
+	".png", ".jpg", ".jpeg", ".gif", ".webp",
 })
 
 #: The whitelisted route every stored attachment URL points at. Storing the

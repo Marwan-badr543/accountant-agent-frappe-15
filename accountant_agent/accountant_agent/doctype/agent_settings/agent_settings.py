@@ -42,14 +42,39 @@ from frappe.model.document import Document
 #: Where the platform's agent API lives. Read from ``site_config.json`` so a
 #: deployment that does not run the agent server on the ERP host — which is
 #: every real deployment — can point at it without editing source.
-_DEFAULT_AGENT_SERVER_URL: str = "http://127.0.0.1:4000"
+_DEFAULT_AGENT_SERVER_URL: str = "http://127.0.0.1:8010"
 _USAGE_REQUEST_TIMEOUT_SECONDS: int = 10
+
+
+def _load_env() -> None:
+    try:
+        import os
+        app_root = os.path.abspath(os.path.join(frappe.get_app_path("accountant_agent"), ".."))
+        env_path = os.path.join(app_root, ".env")
+        if os.path.exists(env_path):
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        key, val = line.split("=", 1)
+                        key = key.strip()
+                        val = val.strip()
+                        if val.startswith(('"', "'")) and val.endswith(val[0]):
+                            val = val[1:-1]
+                        os.environ.setdefault(key, val)
+    except Exception:
+        pass
 
 
 def get_agent_server_url() -> str:
     """Base URL of the platform's agent API for this site."""
+    import os
+    _load_env()
     return (
         frappe.conf.get("accountant_agent_server_url")
+        or os.environ.get("ACCOUNTANT_AGENT_SERVER_URL")
         or _DEFAULT_AGENT_SERVER_URL
     ).rstrip("/")
 

@@ -329,6 +329,7 @@ class ChatUIManager {
 						text_el.html(parsed);
 						if (time_el.length) time_el.fadeIn(300);
 						self.scroll_to_bottom(msg_box);
+						self.post_process_rendered_bubble(msg_box);
 						self.render_mermaid_diagrams(msg_box);
 						self.render_chartjs_diagrams(msg_box);
 						resolve();
@@ -352,6 +353,7 @@ class ChatUIManager {
 
 			msg_box.append(bubble_html);
 			this.scroll_to_bottom(msg_box);
+			this.post_process_rendered_bubble(msg_box);
 			this.render_mermaid_diagrams(msg_box);
 			this.render_chartjs_diagrams(msg_box);
 			return Promise.resolve();
@@ -551,6 +553,7 @@ class ChatUIManager {
 			}
 
 			this.force_scroll_to_bottom(msg_box);
+			this.post_process_rendered_bubble(msg_box);
 			this.render_mermaid_diagrams(msg_box);
 			this.render_chartjs_diagrams(msg_box);
 		}
@@ -599,6 +602,11 @@ class ChatUIManager {
 
 	render_mermaid_diagrams(container) {
 		if (typeof mermaid === 'undefined') return;
+		try {
+			mermaid.initialize(this.get_mermaid_config());
+		} catch (err) {
+			console.error("Mermaid initialization error:", err);
+		}
 		let self = this;
 		container.find('.mermaid-container[data-processed="false"]').each(function() {
 			let $this = $(this);
@@ -874,5 +882,95 @@ class ChatUIManager {
 		temp_output = temp_output.replace(/`(.*?)`/g, '<code>$1</code>');
 
 		return temp_output;
+	}
+
+	post_process_rendered_bubble(container) {
+		let self = this;
+		
+		// 1. Wrap tables in responsive div and align columns
+		container.find('table').each(function() {
+			let table = $(this);
+			
+			// Prevent double-wrapping
+			if (!table.parent().hasClass('agent-table-wrapper')) {
+				table.wrap('<div class="agent-table-wrapper"></div>');
+			}
+			
+			// Detect numeric columns dynamically
+			let first_row = table.find('tr:first');
+			if (first_row.length) {
+				let col_count = first_row.find('th, td').length;
+				let is_numeric_col = new Array(col_count).fill(true);
+				
+				let rows = table.find('tbody tr');
+				if (rows.length === 0) {
+					rows = table.find('tr').slice(1); // skip first row
+				}
+				
+				rows.each(function() {
+					$(this).find('td').each(function(i) {
+						let text = $(this).text().trim().replace(/[\$,€,£,¥]/g, '').trim();
+						if (text && !/^-?[\d,\.\s%]+$/.test(text)) {
+							is_numeric_col[i] = false;
+						}
+					});
+				});
+				
+				// Apply right alignment and numeric classes
+				table.find('tr').each(function() {
+					$(this).find('th, td').each(function(i) {
+						if (is_numeric_col[i]) {
+							$(this).css('text-align', 'right');
+							$(this).addClass('font-numeric');
+						}
+					});
+				});
+			}
+
+			// Style total / balance rows
+			table.find('tr').each(function() {
+				let row = $(this);
+				let row_text = row.text().toLowerCase();
+				if (row_text.includes('total') || row_text.includes('balance') || row_text.includes('reconciliation difference')) {
+					row.addClass('table-total-row');
+				}
+			});
+		});
+	}
+
+	get_mermaid_config() {
+		let is_dark = document.documentElement.getAttribute('data-theme') === 'dark' || 
+		              document.body.getAttribute('data-theme') === 'dark' || 
+		              $('body').attr('data-theme') === 'dark';
+		
+		if (is_dark) {
+			return {
+				startOnLoad: false,
+				theme: 'dark',
+				themeVariables: {
+					primaryColor: '#312e81', // Dark Indigo
+					primaryTextColor: '#f8fafc', // Light slate text
+					nodeTextColor: '#f8fafc',
+					primaryBorderColor: '#4f46e5', // Indigo border
+					lineColor: '#94a3b8', // Light slate lines
+					textColor: '#f8fafc',
+					background: '#0f172a'
+				}
+			};
+		} else {
+			return {
+				startOnLoad: false,
+				theme: 'base',
+				themeVariables: {
+					primaryColor: '#e0e7ff', // Light Indigo
+					primaryTextColor: '#0f172a', // Dark slate text
+					nodeTextColor: '#0f172a',
+					primaryBorderColor: '#4f46e5', // Indigo border
+					lineColor: '#64748b', // Cool gray lines
+					textColor: '#0f172a',
+					background: '#ffffff'
+				}
+			};
+		}
 	}
 }
