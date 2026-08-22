@@ -232,7 +232,7 @@ class ChatMessageHandler {
 				console.error("Message send failed:", err);
 				let error_msg = err.message || '';
 				if (!error_msg.includes('cancelled') && !error_msg.includes('cancellation')) {
-					let final_err = error_msg || __('Unable to get response from Razyn.');
+					let final_err = error_msg || __('Unable to get response from Razyyn.');
 					if (this.chat.active_streams && this.chat.active_streams[active_session_id]) {
 						let stream = this.chat.active_streams[active_session_id];
 						this.chat.ui_manager.finalize_stream_bubble(

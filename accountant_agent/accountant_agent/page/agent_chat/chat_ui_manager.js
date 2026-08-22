@@ -41,7 +41,7 @@ class ChatUIManager {
 						<path d="M22 38 Q32 43 42 38" stroke="url(#robotGrad)" stroke-width="3" stroke-linecap="round" fill="none" />
 					</svg>
 				</div>
-				<h3>${__('Welcome to Razyn')}</h3>
+				<h3>${__('Welcome to Razyyn')}</h3>
 				<p class="text-muted" style="max-width: 440px; margin: 0 auto; font-size: 14px; line-height: 1.5;">
 					${__('Select your agent mode (Ask, Analyse, or Audit) and upload financial documents or ask questions directly.')}
 				</p>

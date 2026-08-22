@@ -8,7 +8,7 @@
 frappe.pages['agent-chat'].on_page_load = function (wrapper) {
 	let page = frappe.ui.make_app_page({
 		parent: wrapper,
-		title: __('Razyn AI'),
+		title: __('Razyyn AI'),
 		single_column: true
 	});
 
@@ -415,7 +415,7 @@ class AccountantAgentChat {
 		let card_html = `
 			<div class="agent-auth-card">
 				<h3 class="text-center" style="margin-top: 0; margin-bottom: 20px; font-weight: 700; color: var(--chat-primary);">
-					Razyn
+					Razyyn
 				</h3>
 				<ul class="nav nav-tabs d-flex justify-content-center">
 					<li class="nav-item">
@@ -624,7 +624,7 @@ class AccountantAgentChat {
 						fieldtype: 'HTML',
 						options: `
 							<div style="font-size: 13px; line-height: 1.6; margin-bottom: 20px; color: var(--text-color);">
-								${__('Manage your Razyn connection and account settings.')}
+								${__('Manage your Razyyn connection and account settings.')}
 							</div>
 							<div style="display: flex; flex-direction: column; gap: 10px;">
 								<button class="btn btn-default btn-block logout-action-btn" style="text-align: left; display: flex; align-items: center; gap: 8px; padding: 10px 15px; margin: 0;">

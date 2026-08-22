@@ -505,7 +505,7 @@ def send_message(message, session_id, agent_email, agent_type="auto", file_urls=
 
 	doc = get_agent_settings_doc(agent_email)
 	if not doc:
-		frappe.throw(_("Not authenticated with Razyn."))
+		frappe.throw(_("Not authenticated with Razyyn."))
 
 	access_token = doc.get_password("access_token", raise_exception=False)
 	if not access_token:
@@ -805,7 +805,7 @@ def cancel_agent(session_id, agent_email):
 
 	doc = get_agent_settings_doc(agent_email)
 	if not doc:
-		frappe.throw(_("Not authenticated with Razyn."))
+		frappe.throw(_("Not authenticated with Razyyn."))
 
 	access_token = doc.get_password("access_token", raise_exception=False)
 
@@ -927,7 +927,7 @@ def delete_agent_account(agent_email: str) -> dict:
 				title="Accountant Agent: account deletion",
 				message=f"Could not reach the agent server to delete {agent_email}: {exc}",
 			)
-			frappe.throw(_("Could not reach the Razyn service. Please try again."))
+			frappe.throw(_("Could not reach the Razyyn service. Please try again."))
 
 	frappe.delete_doc("Agent Settings", doc.name, ignore_permissions=True)
 	frappe.db.commit()
