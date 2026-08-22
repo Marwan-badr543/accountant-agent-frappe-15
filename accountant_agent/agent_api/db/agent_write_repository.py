@@ -20,10 +20,15 @@ TWO ABSOLUTE RULES FOR THIS MODULE
      the customer's permission configuration becomes advisory. api/tests/
      test_create_structural.py asserts both rules by static inspection.
 
-Candidate lookups use frappe.get_list, never frappe.get_all: get_all forces
-ignore_permissions=True (frappe/__init__.py), which would silently bypass the
-User Permissions the customer configured and offer the agent records it must
-never see.
+Candidate lookups are NOT here. Recognising a name - turning "Laptop" into
+SKU002 - is a read, it needs no permission grant, and it lives in
+agent_api_repository beside the SQL endpoint that has always read the site
+without one. See the long note there for why that changed.
+
+What stays here is every write, and rule 2 above is untouched by that move:
+insert(), submit(), cancel() and amend() all execute as the agent's own ERP
+user under the customer's permissions, and ignore_permissions still appears
+nowhere in this file.
 """
 
 from __future__ import annotations
@@ -125,15 +130,33 @@ def commit_write_log(
     stays inside the caller's savepoint. If the document write rolls back, so
     does this - either both exist or neither does, with no window in between.
     """
-    log.db_set(
-        {
-            "status": "COMMITTED",
-            "target_docname": target_docname,
-            "docstatus_written": docstatus_written,
-            "amount_written": amount_written,
-            "response_snapshot": json.dumps(response_snapshot or {}, default=str)[:100000],
-        }
-    )
+    written = {
+        "status": "COMMITTED",
+        "target_docname": target_docname,
+        "docstatus_written": docstatus_written,
+        "response_snapshot": json.dumps(response_snapshot or {}, default=str)[:100000],
+    }
+
+    # A DOCUMENT WITH NO AMOUNT IS NOT A DOCUMENT WITH A NULL AMOUNT.
+    #
+    # `amount_written` is a Currency field, and Frappe renders those as
+    # `decimal(21,9) NOT NULL DEFAULT 0`. Writing an explicit None is therefore
+    # not "leave it blank" - it is a NULL into a NOT NULL column, and MariaDB
+    # answers (1048, "Column 'amount_written' cannot be null").
+    #
+    # `_document_amount` returns None for anything without a grand total or a
+    # total debit, which is every Item, Customer, Supplier, Cost Center and
+    # Warehouse the agent can now be asked to set up. So this one line refused
+    # every non-monetary document the agent created - AFTER the customer had
+    # approved it, and with the row already reserved.
+    #
+    # Omitted rather than coerced: the reservation inserted moments ago already
+    # left the column at its zero default, and not writing a number we do not
+    # have is the honest version of the same result.
+    if amount_written is not None:
+        written["amount_written"] = amount_written
+
+    log.db_set(written)
 
 
 def record_failed_attempt(
@@ -282,51 +305,6 @@ def has_server_script(doctype: str) -> bool:
             "Server Script", {"reference_doctype": doctype, "disabled": 0}
         )
     )
-
-
-def search_link_candidates(
-    doctype: str,
-    filters: dict | list,
-    or_filters: Optional[list],
-    fields: list[str],
-    limit: int,
-    offset: int = 0,
-    order_by: Optional[str] = None,
-) -> list[dict]:
-    """Permission-filtered candidate lookup.
-
-    frappe.get_list, never frappe.get_all. get_list routes through
-    DatabaseQuery, whose ignore_permissions parameter defaults to False in both
-    v14 and v15 (db_query.py:112), so role permissions, User Permissions and
-    permission query conditions all apply for the session user. The parameter is
-    deliberately NOT passed explicitly: api/tests/test_create_structural.py
-    asserts the string never appears in executable gateway code at all, which is
-    a stronger and less ambiguous invariant than "appears, but set to False". That is what makes an
-    agent restricted to one company physically unable to be offered another
-    company's account - and therefore unable to offer one to the user.
-    """
-    return frappe.get_list(
-        doctype,
-        filters=filters,
-        or_filters=or_filters,
-        fields=fields,
-        limit_page_length=limit,
-        limit_start=offset,
-        order_by=order_by or "modified desc",
-    )
-
-
-def count_link_candidates(
-    doctype: str, filters: dict | list, or_filters: Optional[list]
-) -> int:
-    """How many records actually match, so truncation is never silent."""
-    rows = frappe.get_list(
-        doctype,
-        filters=filters,
-        or_filters=or_filters,
-        fields=["count(name) as total"],
-    )
-    return int(rows[0].get("total") or 0) if rows else 0
 
 
 def list_written_documents(limit: int = 20, target_doctype: Optional[str] = None) -> list[dict]:

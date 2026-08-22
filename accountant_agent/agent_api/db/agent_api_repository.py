@@ -190,3 +190,74 @@ def update_chat_last_timestamp(session_id: str) -> None:
             frappe.utils.now_datetime(),
         )
         frappe.db.commit()
+
+
+# ─── Name resolution ─────────────────────────────────────────────────────────
+#
+# WHY THESE LIVE HERE, IN THE READ REPOSITORY, AND NOT IN THE WRITE GATEWAY
+#
+# They used to be write-gateway functions built on frappe.get_list, so every
+# lookup ran under the agent user's DocType permissions. The stated aim was that
+# a customer who had restricted the agent to one company could not be offered
+# another company's account.
+#
+# It did not achieve that, and it cost something real.
+#
+# It did not achieve it because execute_query - the agent's SQL tool, in this
+# very module - already reads any table on the site with no permission check at
+# all. A protection one endpoint enforces and the endpoint beside it ignores is
+# not a protection; it is a difference in behaviour between two doors.
+#
+# What it cost was the agent's ability to recognise anything. Resolution is how
+# the words "Laptop" or "the cash account" become `SKU002` and
+# `1110 - Cash - MC`, and on a site where the customer had not granted read on
+# Item, it returned nothing - so the agent told them, repeatedly, that an item
+# sitting in their own list did not exist. The remedy shipped for that was a
+# setup button granting read on eight hand-picked DocTypes, which is why the
+# agent could recognise an account and a supplier but never an item.
+#
+# So the rule is now stated once and honestly, and it is the same rule the SQL
+# tool has always followed:
+#
+#     READING the customer's ERP needs no grant. WRITING to it needs every
+#     permission Frappe can check, enforced by the Document API as the agent's
+#     own user, and that has not changed by one line - see
+#     agent_write_repository, where ignore_permissions still appears nowhere.
+#
+# Reading is how the agent recognises; writing is how it acts. The customer
+# controls what it may DO. What it may KNOW is the whole ledger, because an
+# accountant who cannot look things up cannot be an accountant.
+
+
+def read_link_candidates(
+    doctype: str,
+    filters: dict | list,
+    or_filters: Optional[list],
+    fields: list[str],
+    limit: int,
+    offset: int = 0,
+    order_by: Optional[str] = None,
+) -> list[dict]:
+    """Candidates for one reference. Read-only, and never permission-filtered."""
+    return frappe.get_all(
+        doctype,
+        filters=filters,
+        or_filters=or_filters,
+        fields=fields,
+        limit_page_length=limit,
+        limit_start=offset,
+        order_by=order_by or "modified desc",
+    )
+
+
+def count_link_candidates(
+    doctype: str, filters: dict | list, or_filters: Optional[list]
+) -> int:
+    """How many records actually match, so truncation is never silent."""
+    rows = frappe.get_all(
+        doctype,
+        filters=filters,
+        or_filters=or_filters,
+        fields=["count(name) as total"],
+    )
+    return int(rows[0].get("total") or 0) if rows else 0

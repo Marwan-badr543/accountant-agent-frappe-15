@@ -34,9 +34,25 @@ WHY THE AGENT'S CREDENTIALS ARE REUSED RATHER THAN ROTATED ON EVERY CONNECT
 WHAT THIS MODULE DELIBERATELY DOES NOT DO
     It does not grant the agent permission on a single accounting document, and
     it does not switch recording on. Those stay where they belong: with the
-    customer, in their own ERP. ``apply_recommended_setup`` exists to make the
-    safe starting configuration one click rather than twenty, but the customer
-    has to ask for it, and what it configures is a dry-run.
+    customer, in their own ERP.
+
+    There was once an ``apply_recommended_setup`` endpoint that granted the
+    agent role read on eight hand-picked DocTypes and Create/Write on Journal
+    Entry. It is gone, and both halves of it were mistakes.
+
+    The read half was solving a problem that should never have existed. Name
+    resolution needed a permission grant, so an agent whose owner had not
+    pressed the button could not recognise their own accounts. Resolution no
+    longer needs one - see the note in ``agent_api_repository`` - so there is
+    nothing left to grant.
+
+    The write half quietly decided, on the customer's behalf, that the agent was
+    a journal-entry tool. It wrote "Journal Entry" into their Agent Write Policy
+    and that single row then refused every supplier bill, sales invoice and
+    payment the agent prepared - on sites whose owners had granted its user far
+    more than that. Which documents the agent may write is now answered by the
+    customer's own ERP permissions, which is where an accountant looks for that
+    answer in the first place.
 """
 
 from __future__ import annotations
@@ -57,20 +73,6 @@ from accountant_agent.install import AGENT_ROLE, AGENT_USER, ensure_agent_user
 #: Long enough for a verification handshake into their ERP and back, short
 #: enough that a dead platform does not appear to hang the desk.
 _PLATFORM_TIMEOUT_SECONDS: int = 45
-
-#: Read permissions the agent needs before it can resolve "the bank account" to
-#: a real account. Without these its candidate lookups return nothing and it
-#: tells the customer their accounts do not exist.
-_RECOMMENDED_READ_ONLY: tuple[str, ...] = (
-    "Company", "Account", "Cost Center", "Customer", "Supplier",
-    "Currency", "Fiscal Year", "Mode of Payment",
-)
-
-#: The one document type the recommended setup allows, and only as a draft.
-#: A journal entry is the most general accounting instrument and the easiest for
-#: an accountant to review before posting.
-_RECOMMENDED_WRITABLE: str = "Journal Entry"
-
 
 # ── Local state helpers ──────────────────────────────────────────────────────
 
@@ -341,43 +343,53 @@ def _granted_doctypes() -> list[dict]:
 
 
 def _missing_steps(status: dict) -> list[str]:
-    """The remaining setup, phrased as instructions rather than as diagnostics."""
+    """The remaining setup, phrased as instructions rather than as diagnostics.
+
+    Deliberately short. Every step that used to appear here about granting read
+    permissions is gone, because reading no longer needs a grant, and the step
+    about listing Journal Entry in the write policy is gone because that list is
+    no longer consulted unless the customer opts into it.
+    """
     missing: list[str] = []
 
     if not status["agent_user_exists"]:
         missing.append(
-            "The agent's ERP user has not been created. Run a bench migrate on "
-            "this site, or press Connect — it provisions the user for you."
+            "The agent's ERP user has not been created. Press Connect - it "
+            "provisions the user for you."
         )
     elif not status["agent_user_enabled"]:
-        missing.append(f"The user {AGENT_USER} is disabled. Enable it to let the agent work.")
+        missing.append(
+            f"The user {AGENT_USER} is disabled. Enable it to let the agent work."
+        )
 
     if not status["connected_to_platform"]:
-        missing.append("Press Connect to link this ERP to your Accountant Agent account.")
-    elif not status["recording_enabled"]:
         missing.append(
-            "Recording is switched off. Turn on 'Allow the agent to record "
-            "entries' when you are ready for it to write."
+            "Press Connect to link this ERP to your Accountant Agent account."
+        )
+        return missing
+
+    if not status["recording_enabled"]:
+        missing.append(
+            "Recording is off, so the agent will read, answer and prepare "
+            "entries but save none of them. Switch it on when you are ready."
         )
 
     if not status["policy_enabled"]:
         missing.append(
-            "The Agent Write Policy is disabled, so the agent will refuse every "
-            "write. Open it and tick Enabled, then list the document types it "
-            "may prepare."
+            "Agent Write Policy is disabled, so every write is refused. Open it "
+            "and tick Enabled."
         )
-    elif not status["allowed_doctypes"]:
+    elif status.get("dry_run_only"):
         missing.append(
-            "The Agent Write Policy allows no document types yet. Add at least "
-            "one — Journal Entry is the usual starting point."
+            "Agent Write Policy is in dry run, so entries are validated against "
+            "your ledger and then discarded. Untick Dry Run Only to keep them."
         )
 
-    writable = [row for row in status["readable_doctypes"] if row.get("create")]
-    if not writable:
+    if not any(row.get("create") for row in status["readable_doctypes"]):
         missing.append(
-            "The agent has not been granted permission on any accounting "
-            "document. Grant the 'Accountant Agent' role Create and Write on the "
-            "document types you want it to prepare."
+            "The agent's ERP user has not been granted Create on any accounting "
+            "document. Open its User record and give it the roles you want it "
+            "to work with - whatever you grant there is what it can prepare."
         )
 
     return missing
@@ -424,6 +436,9 @@ def connect_write_access(
         last_error=None if verified else result.get("verification_error"),
     )
 
+    if connection_id:
+        _permit_writes_in_this_erp()
+
     if verified and _as_bool(enable_recording) and not result.get("write_enabled"):
         set_recording_enabled(agent_email, 1)
         result["write_enabled"] = True
@@ -441,6 +456,88 @@ def connect_write_access(
             else _("Saved, but the agent could not reach this site from the internet yet.")
         ),
     }
+
+
+def _permit_writes_in_this_erp() -> None:
+    """Turn on this ERP's own write authority, because connecting is that decision.
+
+    THE DEFAULT THAT BLOCKED EVERY CUSTOMER WHO EVER CONNECTED
+
+        `Agent Write Policy.enabled` ships as 0 and nothing on this screen
+        ever turned it on. The write gateway checks it in `create_document` and
+        nowhere else - not in `preflight` - so the shape of the failure was:
+        the agent reads the customer's chart, proposes a correct entry, presents
+        it, takes their approval, and only then comes back with HTTP 403.
+
+        That was not a rare misconfiguration. It was the state every new
+        connection started in, and it cost this customer an entire session -
+        they read the refusal as the recording switch, turned that off and on
+        again, and were refused a second time by a switch they had never been
+        shown.
+
+    WHY HERE, AND NOT FOLDED INTO THE RECORDING SWITCH
+
+        Two switches is the correct design and it stays. Agent Write Policy is
+        the ERP's own authority and holds even if this platform is compromised;
+        recording is the day-to-day toggle the customer presses. Merging them
+        would delete a layer of defence to fix a provisioning bug.
+
+        Pressing Connect is a System Manager saying "this agent may write in
+        this system", which is precisely what this field records. So it is
+        provisioned once, here, in the same authenticated desk action that mints
+        the credentials - and left alone afterwards, so a customer who later
+        switches it off stays switched off.
+
+    Recording is untouched and still starts OFF. Connecting grants permission
+    in principle; nothing is written until the customer presses the button.
+    """
+    if not frappe.db.exists("DocType", "Agent Write Policy"):
+        return
+
+    policy = frappe.get_single("Agent Write Policy")
+    if policy.enabled:
+        return
+
+    policy.enabled = 1
+    try:
+        # Saved rather than written straight to the column, so the doctype's own
+        # validate() runs. It is the thing that warns an administrator when the
+        # agent would be both preparer and approver, and the moment writing is
+        # first enabled is exactly when that warning is worth reading.
+        #
+        # CONNECT MUST SURVIVE A POLICY THAT WILL NOT VALIDATE.
+        #
+        # That same validate() also throws - on a negative limit, on a document
+        # type listed twice. Those are pre-existing conditions on a policy this
+        # function did not write, and by the time we get here the agent's
+        # credentials have already been minted and registered with the platform.
+        # Letting a stale limit abort Connect would leave the customer looking at
+        # an error on a site that is, in every other respect, connected.
+        #
+        # So this is a convenience laid on top of Connect, never a precondition
+        # of it. If it cannot be done, Connect still succeeds and the status
+        # screen keeps saying - accurately - that the policy is switched off.
+        policy.save()
+    except Exception:
+        frappe.log_error(
+            title="Accountant Agent: could not enable Agent Write Policy",
+            message=frappe.get_traceback(),
+        )
+        frappe.msgprint(
+            _("Connected. Your Agent Write Policy could not be switched on "
+              "automatically - open it, fix whatever it objects to, and tick "
+              "Enable Agent Writes. Until then every write is refused."),
+            title=_("Write Policy Not Enabled"),
+            indicator="orange",
+        )
+        return
+
+    frappe.msgprint(
+        _("Agent writes are now enabled in Agent Write Policy. Recording is "
+          "still off - press Allow recording when you want the agent to save."),
+        title=_("Write Policy Enabled"),
+        indicator="green",
+    )
 
 
 @frappe.whitelist()
@@ -558,94 +655,6 @@ def disconnect_write_access(agent_email: str) -> dict:
             "Its history in Agent Write Log is kept."
         ),
     }
-
-
-@frappe.whitelist()
-def apply_recommended_setup() -> dict:
-    """Configure the safe starting position, in one action.
-
-    WHAT THIS GRANTS, AND WHY IT IS SAFE TO OFFER
-        Read access on the master data the agent needs in order to recognise an
-        account by name, and Create plus Write on Journal Entry - draft only.
-        It grants NO submit, NO cancel and NO amend, and it enables the write
-        policy in DRY RUN mode, so the agent validates entries against the real
-        ledger and records nothing at all until the customer turns dry run off.
-
-        Offered as an explicit button rather than done at install time, because
-        an app that grants itself ledger permissions on installation is exactly
-        what an accountant should refuse to install.
-    """
-    _require_admin()
-    from frappe.permissions import add_permission, update_permission_property
-
-    granted: list[str] = []
-    for doctype in _RECOMMENDED_READ_ONLY:
-        if not frappe.db.exists("DocType", doctype):
-            continue
-        _grant(add_permission, update_permission_property, doctype, {"read": 1})
-        granted.append(doctype)
-
-    if frappe.db.exists("DocType", _RECOMMENDED_WRITABLE):
-        _grant(
-            add_permission, update_permission_property, _RECOMMENDED_WRITABLE,
-            {"read": 1, "create": 1, "write": 1, "submit": 0, "cancel": 0, "amend": 0},
-        )
-        granted.append(_RECOMMENDED_WRITABLE)
-
-    policy = frappe.get_single("Agent Write Policy")
-    # Dry run is forced ONLY when turning the policy on for the first time.
-    #
-    # A customer with a live, recording setup may press this button simply to
-    # add one more read permission. Forcing dry run unconditionally would
-    # silently stop them recording, and the next entry the agent "prepared"
-    # would never reach their ledger - with nothing in the conversation to say
-    # why. Switching a working system off is not a safe default; it is a
-    # surprise.
-    was_disabled = not policy.enabled
-    policy.enabled = 1
-    if was_disabled:
-        policy.dry_run_only = 1
-    policy.require_approval = 1
-    if not any(
-        row.document_type == _RECOMMENDED_WRITABLE
-        for row in (policy.allowed_document_types or [])
-    ):
-        policy.append(
-            "allowed_document_types",
-            {
-                "document_type": _RECOMMENDED_WRITABLE,
-                "allow_create": 1, "allow_submit": 0,
-                "allow_cancel": 0, "allow_amend": 0,
-            },
-        )
-    policy.flags.ignore_permissions = True
-    policy.save(ignore_permissions=True)
-    frappe.db.commit()
-
-    return {
-        "granted": granted,
-        "dry_run_only": bool(policy.dry_run_only),
-        "message": _(
-            "The agent can now read your chart of accounts and prepare journal "
-            "entries. Dry run is on, so nothing is saved until you turn it off "
-            "in the Agent Write Policy."
-        ) if policy.dry_run_only else _(
-            "The agent can now read your chart of accounts and prepare journal "
-            "entries. Your existing recording settings were left unchanged."
-        ),
-    }
-
-
-def _grant(add_permission, update_permission_property, doctype: str, perms: dict) -> None:
-    """Give the agent role exactly these permissions on one DocType."""
-    if not frappe.db.exists(
-        "Custom DocPerm", {"parent": doctype, "role": AGENT_ROLE, "permlevel": 0}
-    ):
-        add_permission(doctype, AGENT_ROLE, 0)
-    for ptype, value in perms.items():
-        update_permission_property(doctype, AGENT_ROLE, 0, ptype, value)
-    # Never delete. The agent reverses documents; it does not erase them.
-    update_permission_property(doctype, AGENT_ROLE, 0, "delete", 0)
 
 
 def _as_bool(value: Any) -> bool:

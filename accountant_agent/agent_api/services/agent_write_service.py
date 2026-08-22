@@ -38,11 +38,14 @@ from typing import Any, Optional, Sequence
 import frappe
 from frappe import _
 
+from accountant_agent.agent_api.db.agent_api_repository import (
+    count_link_candidates,
+    read_link_candidates as search_link_candidates,
+)
 from accountant_agent.agent_api.db.agent_write_repository import (
     amend_document,
     cancel_document,
     commit_write_log,
-    count_link_candidates,
     doctype_exists,
     find_write_log_by_key,
     get_doctype_meta,
@@ -55,7 +58,6 @@ from accountant_agent.agent_api.db.agent_write_repository import (
     next_savepoint_name,
     record_failed_attempt,
     reserve_write_log,
-    search_link_candidates,
     submit_document,
 )
 
@@ -164,6 +166,17 @@ class WritePolicy:
     allowed_document_types: tuple[DocTypePermission, ...]
     allowed_companies: tuple[str, ...]
     blocked_accounts: tuple[str, ...]
+    #: When set, ONLY the document types listed above may be written, with the
+    #: per-action flags on each row. When clear - the default - the customer's
+    #: own ERP permissions decide, and this list is not consulted at all.
+    #:
+    #: It defaults to clear because the list was the wrong instrument. It began
+    #: life holding exactly one row, "Journal Entry", put there by a setup
+    #: button; the effect was an agent that refused to record a supplier bill
+    #: on a site whose owner had granted its user every role in the system. The
+    #: refusal did not come from the customer's permissions - it came from a
+    #: list this app wrote on their behalf and never mentioned again.
+    restrict_to_listed_doctypes: bool = False
 
     def permission_for(self, doctype: str) -> Optional[DocTypePermission]:
         for row in self.allowed_document_types:
@@ -175,6 +188,7 @@ class WritePolicy:
         return {
             "enabled": self.enabled,
             "dry_run_only": self.dry_run_only,
+            "restrict_to_listed_doctypes": self.restrict_to_listed_doctypes,
             "require_approval": self.require_approval,
             "max_documents_per_run": self.max_documents_per_run,
             "max_total_amount_per_run": self.max_total_amount_per_run,
@@ -245,6 +259,7 @@ def load_write_policy() -> WritePolicy:
     if not doctype_exists("Agent Write Policy"):
         return WritePolicy(
             enabled=False, dry_run_only=False, require_approval=True,
+            restrict_to_listed_doctypes=False,
             max_documents_per_run=0, max_total_amount_per_run=0.0,
             posting_date_max_days_back=0, posting_date_max_days_forward=0,
             allowed_document_types=(), allowed_companies=(), blocked_accounts=(),
@@ -254,6 +269,7 @@ def load_write_policy() -> WritePolicy:
     return WritePolicy(
         enabled=bool(doc.enabled),
         dry_run_only=bool(doc.dry_run_only),
+        restrict_to_listed_doctypes=bool(doc.get("restrict_to_listed_doctypes")),
         require_approval=bool(doc.require_approval),
         max_documents_per_run=int(doc.max_documents_per_run or 0),
         max_total_amount_per_run=float(doc.max_total_amount_per_run or 0),
@@ -289,22 +305,71 @@ def assert_write_policy_enabled(policy: WritePolicy) -> None:
         )
 
 
-def assert_doctype_allowed(policy: WritePolicy, doctype: str, action: str) -> DocTypePermission:
-    """Both the policy AND the agent user's ERP permission must allow the action.
+#: Never writable by the agent, whatever the ERP would permit.
+#:
+#: THE ONE PLACE A LIST IS STILL THE RIGHT INSTRUMENT.
+#:
+#: Everything else is decided by the customer's own permissions, which is what
+#: an accountant expects: grant the agent's user a role, the agent can use it.
+#: These cannot be, because they are the instruments that decide what anyone is
+#: allowed to do, or that record what the agent already did.
+#:
+#: The agent user on a live site carries System Manager among forty-odd roles,
+#: granted by an owner who meant "you may do accounting". Without this set,
+#: "the ERP decides" would let the agent grant itself permissions, mint a user,
+#: relax its own policy, or edit the log of its own writes - and an audit trail
+#: its subject can edit is not an audit trail.
+NEVER_WRITABLE: frozenset[str] = frozenset({
+    # Who may do what.
+    "User", "Role", "Role Profile", "Custom Role", "Custom DocPerm", "DocPerm",
+    "User Permission", "DocShare",
+    # What the system is.
+    "DocType", "DocField", "Custom Field", "Property Setter", "Module Def",
+    "Server Script", "Client Script", "Scheduled Job Type", "Webhook",
+    # This app's own controls and its record of itself.
+    "Agent Write Policy", "Agent Write Log", "Agent Settings",
+})
 
-    This checks the policy half. The ERP half is enforced by the Document API
-    itself at insert/submit/cancel time, as the agent user. Neither substitutes
-    for the other.
+
+def assert_doctype_allowed(policy: WritePolicy, doctype: str, action: str) -> DocTypePermission:
+    """May the agent do this, to this document type, in this system?
+
+    THREE INDEPENDENT ANSWERS, AND EVERY ONE OF THEM CAN SAY NO
+
+      1. this app's hard refusals - NEVER_WRITABLE, below, which no setting can
+         switch off;
+      2. the customer's ERP permissions on the agent's user - the authority in
+         the ordinary case, and the one they already understand;
+      3. the Agent Write Policy's document list, but ONLY when the customer has
+         asked for it by ticking Restrict To Listed Document Types.
+
+    (3) used to be the only answer, which made a list maintained by this app the
+    thing standing between an accountant and their own ledger. It held one row.
     """
     if action not in VALID_ACTIONS:
         raise MissingParameterError(_("Unknown action '{0}'.").format(action))
+
+    if doctype in NEVER_WRITABLE:
+        raise DocTypeNotAllowedError(
+            _(
+                "The agent is never allowed to write {0} records. That document "
+                "type controls permissions or holds the record of what the agent "
+                "itself did, and no setting can grant it."
+            ).format(doctype),
+            code="DOCTYPE_NEVER_WRITABLE",
+        )
+
+    if not policy.restrict_to_listed_doctypes:
+        return _permission_from_the_erp(doctype, action)
 
     permission = policy.permission_for(doctype)
     if permission is None:
         raise DocTypeNotAllowedError(
             _(
                 "{0} is not in the list of document types this agent may write. "
-                "A System Manager can add it in Agent Write Policy."
+                "A System Manager can add it in Agent Write Policy, or untick "
+                "Restrict To Listed Document Types to let this system's own "
+                "permissions decide."
             ).format(doctype)
         )
 
@@ -321,6 +386,73 @@ def assert_doctype_allowed(policy: WritePolicy, doctype: str, action: str) -> Do
             code=f"{action.upper()}_NOT_PERMITTED",
         )
     return permission
+
+
+def _permission_from_the_erp(doctype: str, action: str) -> DocTypePermission:
+    """What the customer's own ERP permissions say the agent may do.
+
+    Asked as the agent user, which is who the session already is - see
+    assert_session_is_agent_user. Frappe would refuse at insert or submit time
+    anyway; asking here turns a stack trace at write time into a sentence the
+    customer can act on, and it is the only place that can name WHICH role is
+    missing without guessing.
+
+    A single doctype that does not exist on this site is a refusal, not a
+    crash: ERPNext ships different document types by version and by installed
+    app, and the agent must be able to say "you do not have that here".
+    """
+    if not doctype_exists(doctype):
+        raise DocTypeNotAllowedError(
+            _("There is no document type called {0} in this system.").format(doctype),
+            code="DOCTYPE_UNKNOWN",
+        )
+
+    # Singles are configuration - Accounts Settings, Selling Settings. The agent
+    # records transactions; it does not reconfigure the system it records into.
+    try:
+        if frappe.get_meta(doctype).issingle:
+            raise DocTypeNotAllowedError(
+                _("{0} is a settings page rather than a document, so the agent "
+                  "does not write it.").format(doctype),
+                code="DOCTYPE_IS_SINGLE",
+            )
+    except DocTypeNotAllowedError:
+        raise
+    except Exception:
+        # A meta that cannot be loaded is not a licence to proceed.
+        raise DocTypeNotAllowedError(
+            _("The agent could not read the definition of {0} in this system.")
+            .format(doctype),
+            code="DOCTYPE_UNREADABLE",
+        )
+
+    if not frappe.has_permission(doctype, ptype=_ERP_PTYPE[action]):
+        raise DocTypeNotAllowedError(
+            _(
+                "The agent's ERP user is not permitted to {0} {1}. Grant the "
+                "Accountant Agent role that permission on {1} in your own "
+                "permission settings and it will be able to."
+            ).format(action, doctype),
+            code=f"{action.upper()}_NOT_PERMITTED",
+        )
+
+    # Everything the ERP allows, and nothing beyond it. `auto_submit_ceiling_amount`
+    # is deliberately 0: submitting without a human is opt-in per document type,
+    # and "the ERP allows it" is not the customer asking for it.
+    return DocTypePermission(
+        document_type=doctype,
+        allow_create=frappe.has_permission(doctype, ptype="create"),
+        allow_submit=frappe.has_permission(doctype, ptype="submit"),
+        allow_cancel=frappe.has_permission(doctype, ptype="cancel"),
+        allow_amend=frappe.has_permission(doctype, ptype="amend"),
+        auto_submit_ceiling_amount=0.0,
+    )
+
+
+#: How this app's four actions read in Frappe's permission vocabulary.
+_ERP_PTYPE: dict[str, str] = {
+    "create": "create", "submit": "submit", "cancel": "cancel", "amend": "amend",
+}
 
 
 def assert_within_policy_caps(policy: WritePolicy, payload: dict, doctype: str) -> None:
@@ -890,13 +1022,22 @@ def preflight_document(payload: dict, run_dry_run: bool = True) -> dict:
 
     findings.extend(_preflight_permission(doc, doctype))
     findings.extend(_preflight_links(doc))
-    findings.extend(_preflight_mandatory(doc))
     findings.extend(_preflight_frozen_period(payload))
 
     dry_run_ran = False
     if run_dry_run and _supports_dry_run(doctype):
         extra, dry_run_ran = _preflight_transactional(doc)
-        findings.extend(extra)
+        if extra:
+            mandatory = _preflight_mandatory(doc)
+            if mandatory:
+                findings.extend(mandatory)
+            else:
+                findings.extend(extra)
+        else:
+            findings.extend(extra)
+            findings.extend(_preflight_mandatory(doc))
+    else:
+        findings.extend(_preflight_mandatory(doc))
 
     blocking = [f for f in findings if f.severity == "BLOCKING"]
     ask_user = [f for f in findings if f.severity == "ASK_USER"]
@@ -950,6 +1091,51 @@ def _prepare_like_insert(doc: Any) -> None:
             # the findings. A failure here must not mask the real validation
             # result, which the subsequent checks produce anyway.
             pass
+
+    _let_the_erp_finish_the_document(doc)
+
+
+def _let_the_erp_finish_the_document(doc: Any) -> None:
+    """Run ERPNext's own field population, the way the insert path does.
+
+    THE FIELDS AN ERP FILLS IN FOR ITSELF ARE NOT FIELDS TO REFUSE A DOCUMENT
+    OVER.
+
+    A purchase invoice carrying nothing but a supplier, an item code, a quantity
+    and a rate inserts perfectly well: ERPNext derives the payable account
+    (`credit_to`), the unit of measure, the line amount and the company-currency
+    figures from the supplier, the item and the company's own defaults. That
+    derivation lives in ``set_missing_values``.
+
+    Preflight did not call it, so it judged a document the ERP had not finished
+    building. The customer was told their supplier bill was missing Credit To,
+    UOM, Accepted Qty, Amount, Rate (Company Currency) and Amount (Company
+    Currency) - six questions about six fields nobody should ever be asked - and
+    then refused outright with:
+
+        Row 1: Expense Account None cannot be same as Credit To (Party Account)
+        None
+
+    ...which is ERPNext comparing two fields it was about to populate. The
+    identical payload inserts without complaint.
+
+    Best-effort and version-tolerant: ``set_missing_values`` is an ERPNext
+    controller method, absent on plain Frappe DocTypes, and its signature has
+    varied. A failure here only costs noisier findings; it can never turn a bad
+    document into an accepted one, because the real validation runs afterwards.
+    """
+    populate = getattr(doc, "set_missing_values", None)
+    if not callable(populate):
+        return
+    try:
+        populate(for_validate=True)
+    except TypeError:
+        try:
+            populate()
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 def _preflight_permission(doc: Any, doctype: str) -> list[PreflightFinding]:

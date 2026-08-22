@@ -12,6 +12,7 @@
   "column_break_awp1",
   "require_approval",
   "document_types_section",
+  "restrict_to_listed_doctypes",
   "allowed_document_types",
   "limits_section",
   "max_documents_per_run",
@@ -59,6 +60,13 @@
    "fieldname": "document_types_section",
    "fieldtype": "Section Break",
    "label": "Permitted Document Types"
+  },
+  {
+   "default": "0",
+   "fieldname": "restrict_to_listed_doctypes",
+   "fieldtype": "Check",
+   "label": "Restrict To Listed Document Types",
+   "description": "Leave this off - the default - and the agent may prepare any document your own ERP permissions allow its user to, which is the setting most practices want. Tick it to narrow the agent to the list below, and only the document types you add there will be permitted."
   },
   {
    "description": "A document type absent from this table cannot be written, regardless of the agent user's role permissions. Both this table and the agent user's ERP permissions must allow an action.",
