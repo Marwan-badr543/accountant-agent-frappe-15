@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -23,26 +22,27 @@ from frappe import _
 from frappe.utils.file_manager import save_file
 
 from accountant_agent.agent_api.db.agent_api_repository import (
-	chat_session_exists,
 	doctype_exists,
 	execute_select_query,
 	find_settings_name_by_api_key,
+	get_chat_session_owner,
 	get_doctype_metadata,
 	insert_chat_history_record,
 	update_chat_last_timestamp,
 )
-
 
 # ─── Domain Exceptions (protocol-agnostic) ──────────────────────────────────
 
 
 class AuthenticationRequiredError(Exception):
 	"""Raised when no API key is provided."""
+
 	pass
 
 
 class InvalidApiKeyError(Exception):
 	"""Raised when the API key does not match any Agent Settings record."""
+
 	pass
 
 
@@ -109,17 +109,28 @@ class InvalidPayloadFormatError(Exception):
 _FORBIDDEN_SQL_PATTERNS: list[re.Pattern] = [
 	re.compile(pattern, re.IGNORECASE)
 	for pattern in [
-		r"\binsert\b", r"\bupdate\b", r"\bdelete\b", r"\bdrop\b",
-		r"\balter\b", r"\bcreate\b", r"\btruncate\b", r"\breplace\s+into\b",
-		r"\brename\b", r"\bgrant\b", r"\brevoke\b", r"\bexecute\b",
-		r"\bload_file\b", r"\boutfile\b", r"\bdumpfile\b", r"\binto\s+outfile\b",
-		r"\bset\s+session\b", r"\bset\s+global\b",
+		r"\binsert\b",
+		r"\bupdate\b",
+		r"\bdelete\b",
+		r"\bdrop\b",
+		r"\balter\b",
+		r"\bcreate\b",
+		r"\btruncate\b",
+		r"\breplace\s+into\b",
+		r"\brename\b",
+		r"\bgrant\b",
+		r"\brevoke\b",
+		r"\bexecute\b",
+		r"\bload_file\b",
+		r"\boutfile\b",
+		r"\bdumpfile\b",
+		r"\binto\s+outfile\b",
+		r"\bset\s+session\b",
+		r"\bset\s+global\b",
 	]
 ]
 
-_SELECT_START_PATTERN: re.Pattern = re.compile(
-	r"^\s*(select|with)\b", re.IGNORECASE
-)
+_SELECT_START_PATTERN: re.Pattern = re.compile(r"^\s*(select|with)\b", re.IGNORECASE)
 
 #: Tables that hold credentials, sessions or engine internals. None of them is
 #: an accounting record, so refusing them costs the product nothing — while
@@ -130,17 +141,27 @@ _DENIED_IDENTIFIER_PATTERNS: list[re.Pattern] = [
 	re.compile(pattern, re.IGNORECASE)
 	for pattern in [
 		# Frappe's own internal tables, all of which are `__`-prefixed.
-		r"__auth", r"__global_search", r"__user_settings", r"__usersettings",
+		r"__auth",
+		r"__global_search",
+		r"__user_settings",
+		r"__usersettings",
 		# Database engine catalogues. information_schema is handled separately
 		# below — the audit agent legitimately enumerates tables and columns
 		# through it, so a blanket refusal here would break schema discovery.
 		r"\bperformance_schema\b",
-		r"\bmysql\s*\.", r"\bpg_catalog\b", r"\bpg_shadow\b", r"\bpg_authid\b",
+		r"\bmysql\s*\.",
+		r"\bpg_catalog\b",
+		r"\bpg_shadow\b",
+		r"\bpg_authid\b",
 		# DocTypes that exist to store secrets and integration credentials.
-		r"tabAgent\s+Settings", r"tabOAuth\s+Bearer\s+Token",
-		r"tabOAuth\s+Authorization\s+Code", r"tabToken\s+Cache",
-		r"tabSocial\s+Login\s+Key", r"tabConnected\s+App",
-		r"tabWebhook", r"tabIntegration\s+Request",
+		r"tabAgent\s+Settings",
+		r"tabOAuth\s+Bearer\s+Token",
+		r"tabOAuth\s+Authorization\s+Code",
+		r"tabToken\s+Cache",
+		r"tabSocial\s+Login\s+Key",
+		r"tabConnected\s+App",
+		r"tabWebhook",
+		r"tabIntegration\s+Request",
 	]
 ]
 
@@ -150,7 +171,9 @@ _DENIED_IDENTIFIER_PATTERNS: list[re.Pattern] = [
 _DENIED_COLUMN_PATTERNS: list[re.Pattern] = [
 	re.compile(pattern, re.IGNORECASE)
 	for pattern in [
-		r"\bapi_secret\b", r"\bencryption_key\b", r"\breset_password_key\b",
+		r"\bapi_secret\b",
+		r"\bencryption_key\b",
+		r"\breset_password_key\b",
 		r"\bsocial_login_userid\b",
 	]
 ]
@@ -180,9 +203,7 @@ _INFORMATION_SCHEMA_PATTERN: re.Pattern = re.compile(
 	r"\binformation_schema\b(?:\s*\.\s*([a-zA-Z0-9_]+))?", re.IGNORECASE
 )
 
-_STRING_LITERAL_PATTERN: re.Pattern = re.compile(
-	r"'(?:[^'\\]|\\.|'')*'|\"(?:[^\"\\]|\\.|\"\")*\"", re.DOTALL
-)
+_STRING_LITERAL_PATTERN: re.Pattern = re.compile(r"'(?:[^'\\]|\\.|'')*'|\"(?:[^\"\\]|\\.|\"\")*\"", re.DOTALL)
 
 
 def _mask_string_literals(query: str) -> str:
@@ -199,10 +220,7 @@ def _max_result_rows() -> int:
 
 
 def _query_timeout_seconds() -> int:
-	return int(
-		frappe.conf.get("accountant_agent_query_timeout_seconds")
-		or DEFAULT_QUERY_TIMEOUT_SECONDS
-	)
+	return int(frappe.conf.get("accountant_agent_query_timeout_seconds") or DEFAULT_QUERY_TIMEOUT_SECONDS)
 
 
 def assert_query_is_read_only(clean_query: str) -> None:
@@ -212,9 +230,7 @@ def assert_query_is_read_only(clean_query: str) -> None:
 		ForbiddenQueryError: with a reason the agent can act on.
 	"""
 	if not _SELECT_START_PATTERN.match(clean_query):
-		raise ForbiddenQueryError(
-			"Only SELECT queries are allowed for security reasons."
-		)
+		raise ForbiddenQueryError("Only SELECT queries are allowed for security reasons.")
 
 	scannable = _mask_string_literals(clean_query)
 
@@ -222,16 +238,12 @@ def assert_query_is_read_only(clean_query: str) -> None:
 	# executes every statement in the string, so on a Postgres site the
 	# SELECT-must-come-first guard alone would wave through `SELECT 1; ...`.
 	if ";" in scannable.rstrip().rstrip(";"):
-		raise ForbiddenQueryError(
-			"Only a single statement may be executed per request."
-		)
+		raise ForbiddenQueryError("Only a single statement may be executed per request.")
 
 	for pattern in _FORBIDDEN_SQL_PATTERNS:
 		match = pattern.search(scannable)
 		if match:
-			raise ForbiddenQueryError(
-				f"Query contains forbidden keyword: {match.group(0)}"
-			)
+			raise ForbiddenQueryError(f"Query contains forbidden keyword: {match.group(0)}")
 
 	for pattern in _DENIED_IDENTIFIER_PATTERNS:
 		if pattern.search(scannable):
@@ -242,23 +254,20 @@ def assert_query_is_read_only(clean_query: str) -> None:
 
 	for pattern in _DENIED_COLUMN_PATTERNS:
 		if pattern.search(scannable):
-			raise ForbiddenQueryError(
-				"This query reads a credential column, which is not permitted."
-			)
+			raise ForbiddenQueryError("This query reads a credential column, which is not permitted.")
 
 	for match in _INFORMATION_SCHEMA_PATTERN.finditer(scannable):
 		view = (match.group(1) or "").lower()
 		if view not in _ALLOWED_INFORMATION_SCHEMA_VIEWS:
 			raise ForbiddenQueryError(
-				"Only information_schema.tables and information_schema.columns "
-				"may be read."
+				"Only information_schema.tables and information_schema.columns " "may be read."
 			)
 
 
 # ─── Authentication Service ─────────────────────────────────────────────────
 
 
-def authenticate_by_api_key(api_key: Optional[str]) -> str:
+def authenticate_by_api_key(api_key: str | None) -> str:
 	"""
 	Validate the given API key against stored Agent Settings records.
 
@@ -328,7 +337,7 @@ def _rewrite_query(query: str) -> str:
 			name = " ".join(words[:length])
 			if not is_doctype(name):
 				continue
-			remainder = candidate[candidate.index(name) + len(name):]
+			remainder = candidate[candidate.index(name) + len(name) :]
 			# The identifier run is greedy enough to have swallowed any
 			# following JOIN — `FROM Sales Invoice a JOIN Account b` is one
 			# match — so the tail is rewritten too. re.sub does not rescan its
@@ -404,8 +413,13 @@ def validate_and_execute_query(sql_query: str, settings_user: str) -> dict:
 
 # Layout field types that carry no data and should be excluded from schema summaries
 _IGNORED_FIELD_TYPES: set[str] = {
-	"Section Break", "Column Break", "Tab Break",
-	"HTML", "Fold", "Table", "Heading",
+	"Section Break",
+	"Column Break",
+	"Tab Break",
+	"HTML",
+	"Fold",
+	"Table",
+	"Heading",
 }
 
 
@@ -472,6 +486,21 @@ def build_doctype_schema_summary(doctype: str) -> dict:
 	}
 
 
+def _assert_session_owned_by(session_id: str, settings_user: str) -> None:
+	"""Raise ResourceNotFoundError unless session_id exists and belongs to settings_user.
+
+	Without this, any holder of a valid Agent Settings API key could pass any
+	other customer's session_id and inject clarification questions or attach
+	generated files to that customer's chat (cross-session IDOR). The response
+	says "not found" rather than "forbidden" for a session that exists but
+	belongs to someone else, so this endpoint cannot be used to enumerate other
+	customers' session ids by their response code alone.
+	"""
+	owner = get_chat_session_owner(session_id)
+	if not owner or owner != settings_user:
+		raise ResourceNotFoundError("Chat session", session_id)
+
+
 # ─── Clarification Request Service ──────────────────────────────────────────
 
 
@@ -499,9 +528,7 @@ def parse_questions_payload(questions_raw) -> list:
 		) from exc
 
 	if not isinstance(parsed, list):
-		raise InvalidPayloadFormatError(
-			"questions must be a list / JSON array."
-		)
+		raise InvalidPayloadFormatError("questions must be a list / JSON array.")
 
 	return parsed
 
@@ -536,8 +563,7 @@ def process_clarification_request(
 
 	parsed_questions = parse_questions_payload(questions_raw)
 
-	if not chat_session_exists(session_id):
-		raise ResourceNotFoundError("Chat session", session_id)
+	_assert_session_owned_by(session_id, settings_user)
 
 	# Build the JSON content payload for chat history
 	content_payload = {
@@ -565,9 +591,7 @@ def process_clarification_request(
 			"message": "Clarification request saved and broadcasted successfully.",
 		}
 	except Exception as exc:
-		raise ClarificationProcessingError(
-			f"Error saving clarification request: {exc}"
-		) from exc
+		raise ClarificationProcessingError(f"Error saving clarification request: {exc}") from exc
 
 
 #: Ceiling on a generated report the agent may push back into the ERP. Reports
@@ -592,9 +616,7 @@ class FileTooLargeError(Exception):
 	def __init__(self, size_bytes: int, limit_bytes: int) -> None:
 		self.size_bytes = size_bytes
 		self.limit_bytes = limit_bytes
-		super().__init__(
-			f"File of {size_bytes} bytes exceeds the {limit_bytes} byte limit."
-		)
+		super().__init__(f"File of {size_bytes} bytes exceeds the {limit_bytes} byte limit.")
 
 
 def save_generated_file(session_id: str, uploaded_file: Any, settings_user: str) -> dict:
@@ -612,8 +634,7 @@ def save_generated_file(session_id: str, uploaded_file: Any, settings_user: str)
 	if not session_id:
 		raise MissingParameterError("session_id")
 
-	if not chat_session_exists(session_id):
-		raise ResourceNotFoundError("Chat session", session_id)
+	_assert_session_owned_by(session_id, settings_user)
 
 	content = uploaded_file.read()
 	if len(content) > MAX_GENERATED_FILE_BYTES:
