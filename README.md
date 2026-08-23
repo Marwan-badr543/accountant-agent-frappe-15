@@ -1,6 +1,6 @@
-# Accountant Agent for Frappe 15
+# Razyyn for Frappe 15
 
-An AI-powered accounting assistant app integrated directly into your Frappe & ERPNext version 15 instance. This application exposes a custom interface inside ERPNext and communicates securely with the external Accountant Agent server.
+An AI-powered accounting assistant app integrated directly into your Frappe & ERPNext version 15 instance. This application exposes a custom interface inside ERPNext and communicates securely with the external Razyyn server.
 
 ## Features
 
@@ -18,12 +18,12 @@ An AI-powered accounting assistant app integrated directly into your Frappe & ER
 
 1. **Get the App:**
    ```bash
-   bench get-app accountant_agent https://github.com/Marwan-badr543/accountant-agent-frappe-15
+   bench get-app razyyn https://github.com/Marwan-badr543/razyyn-frappe-15
    ```
 
 2. **Install on Your Site:**
    ```bash
-   bench --site [your-site-name] install-app accountant_agent
+   bench --site [your-site-name] install-app razyyn
    ```
 
 3. **Migrate the Database:**

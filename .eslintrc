@@ -119,6 +119,13 @@
 		"after": true,
 		"qz": true,
 		"localforage": true,
-		"extend_cscript": true
+		"extend_cscript": true,
+		"mermaid": true,
+		"ChatAttachmentsRenderer": true,
+		"ChatUIManager": true,
+		"ChatSessionManager": true,
+		"ChatMessageHandler": true,
+		"AgentSelector": true,
+		"FileUploadHandler": true
 	}
 }
