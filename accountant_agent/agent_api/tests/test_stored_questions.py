@@ -19,6 +19,11 @@ WHAT THESE TESTS PIN
     * The question is stored. The options are NOT: the choice has been made,
       the answer is the customer's own next message, and a list of the roads
       not taken between the two only makes the exchange harder to read.
+    * EVERY stored question folds, with the question itself as the handle:
+      *"it should be collabsable so user can oben or close to save chat window
+      space in ui"*. What folds away is the preamble and the guidance around
+      it, never the question — that is read live, above an open answer picker,
+      and a clipped question there would be worse than no fold at all.
     * The customer's answer comes out of the envelope the picker sends, and
       the question it echoes back does not.
     * The structured questions still ride along invisibly, so reloading the
@@ -46,6 +51,7 @@ from base64 import b64decode
 from accountant_agent.accountant_agent.page.agent_chat.agent_chat import (
 	_answer_text,
 	_collapsible_question,
+	_prose_only,
 	_readable_response,
 )
 
@@ -58,6 +64,15 @@ ONE = [{
 }]
 
 TWO = ONE + [{"id": "amount", "question": "How much was it?", "options": []}]
+
+#: The card as the agent renders it: a preamble, the question, and a closing
+#: line telling them they may type instead of tapping. Only the middle line is
+#: worth a customer's eye once the exchange is over.
+CARD = (
+	"Before I record this, let me check one thing with you.\n\n"
+	"**من هو العميل في هذه العملية؟**\n\n"
+	"Tell me the name as it appears in your system, or pick from the list below."
+)
 
 
 def _payload(stored: str) -> list:
@@ -74,23 +89,34 @@ class StoredQuestionTests(unittest.TestCase):
 		for option in ONE[0]["options"]:
 			self.assertNotIn(option, stored)
 
-	def test_one_question_is_not_wrapped_in_a_widget(self):
-		"""A single sentence with nothing to fold is smaller than the block
-		that would wrap it, and a caret that opens onto nothing is noise."""
-		stored = _collapsible_question(ONE[0]["question"], ONE)
-		self.assertNotIn("<details", stored)
-		self.assertNotIn("<summary", stored)
+	def test_every_question_folds_with_itself_as_the_handle(self):
+		"""*"it should be collabsable so user can oben or close to save chat
+		window space in ui"*, asked twice. A conversation that recorded eight
+		documents is eight lines of question, not eight cards."""
+		stored = _collapsible_question(CARD, ONE)
+		self.assertIn("<details", stored)
+		self.assertIn("<summary>", stored)
+		# Closed by default: that is what saves the space.
+		self.assertNotIn("<details open", stored)
 
-	def test_the_carrier_does_not_take_a_paragraph_of_its_own(self):
-		"""A blank line is a paragraph break to every Markdown renderer. The
-		span is `display: none`; the `<p>` around it would not be."""
-		stored = _collapsible_question(ONE[0]["question"], ONE)
-		self.assertNotIn("\n\n<span", stored)
-		self.assertEqual(len(stored.splitlines()), 1)
-		self.assertTrue(stored.endswith("</span>"), stored)
+	def test_the_question_is_never_clipped_in_the_summary(self):
+		"""The same string is published LIVE, the moment the agent pauses. A
+		truncated question above an open answer picker is worse than no fold."""
+		stored = _collapsible_question(CARD, ONE)
+		summary = stored.split("<summary>", 1)[1].split("</summary>", 1)[0]
+		self.assertIn("من هو العميل في هذه العملية؟", summary)
+		self.assertNotIn("...", summary)
+
+	def test_what_folds_away_is_everything_except_the_question(self):
+		stored = _collapsible_question(CARD, ONE)
+		body = stored.split("</summary>", 1)[1]
+		self.assertIn("Before I record this", body)
+		# ...and the question is not repeated inside the fold, which is what
+		# anybody opening it would see twice.
+		self.assertNotIn("من هو العميل في هذه العملية؟", body)
 
 	def test_a_reload_can_still_offer_the_answers(self):
-		self.assertEqual(_payload(_collapsible_question("q", ONE)), ONE)
+		self.assertEqual(_payload(_collapsible_question(CARD, ONE)), ONE)
 
 	def test_several_questions_fold_but_still_show_none_of_the_options(self):
 		stored = _collapsible_question(TWO[0]["question"], TWO)
@@ -158,3 +184,47 @@ class EnvelopeTests(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class HistoryToTheModelTests(unittest.TestCase):
+	"""What the agent server is sent as the conversation so far.
+
+	*"it should send to llm in chat history, so it can get the context and
+	avoide ask the user the same question twice"*. It is sent the sentence the
+	person actually read — never the envelope the client needs as data, and
+	never the base64 the picker needs to survive a reload.
+	"""
+
+	def test_the_options_payload_is_stripped_out(self):
+		stored = _collapsible_question(CARD, ONE)
+		prose = _prose_only(stored)
+		self.assertIn("من هو العميل في هذه العملية؟", prose)
+		self.assertNotIn("data-questions", prose)
+		self.assertNotIn("<details", prose)
+		self.assertNotIn("<summary", prose)
+
+	def test_a_plan_envelope_is_read_as_its_prose(self):
+		"""Handing a model `{"type": "plan", ...}` teaches it to answer in
+		JSON. What the customer read was the plan."""
+		stored = json.dumps({
+			"type": "plan", "plan": "Here is the entry I have prepared.",
+			"status": "pending",
+		})
+		self.assertEqual(_prose_only(stored), "Here is the entry I have prepared.")
+
+	def test_a_clarification_envelope_is_read_as_its_question(self):
+		stored = json.dumps({
+			"type": "clarification", "question": "Which supplier did you mean?",
+			"questions": [{"id": "party", "options": ["Delta", "Acme"]}],
+		})
+		self.assertEqual(_prose_only(stored), "Which supplier did you mean?")
+
+	def test_an_ordinary_turn_is_handed_over_untouched(self):
+		self.assertEqual(
+			_prose_only("i purchased paper supplies with 500 egp"),
+			"i purchased paper supplies with 500 egp",
+		)
+
+	def test_an_empty_turn_yields_nothing_to_send(self):
+		self.assertEqual(_prose_only("   "), "")
+		self.assertEqual(_prose_only(None), "")

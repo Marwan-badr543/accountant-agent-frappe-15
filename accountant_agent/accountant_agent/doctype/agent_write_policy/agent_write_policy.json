@@ -81,8 +81,8 @@
    "label": "Blast Radius Limits"
   },
   {
-   "default": "100",
-   "description": "Maximum number of documents the agent may write in a single run.",
+   "default": "0",
+   "description": "Maximum number of documents the agent may write in a single run. 0 means no limit.",
    "fieldname": "max_documents_per_run",
    "fieldtype": "Int",
    "label": "Max Documents Per Run"
@@ -99,18 +99,18 @@
    "fieldtype": "Column Break"
   },
   {
-   "default": "90",
-   "description": "The agent may not post with a date earlier than this many days ago.",
+   "default": "0",
+   "description": "The agent may not post with a date earlier than this many days ago. 0 means no limit. Entries dated inside a closed accounting period are refused regardless of this setting.",
    "fieldname": "posting_date_max_days_back",
    "fieldtype": "Int",
    "label": "Posting Date - Max Days Back"
   },
   {
    "default": "0",
-   "description": "The agent may not post with a future date beyond this many days. 0 forbids future-dating.",
+   "description": "The agent may not post with a future date beyond this many days. NOTE: unlike every other limit on this form, 0 here does NOT mean unlimited - it forbids future-dated entries entirely, which is the intended default.",
    "fieldname": "posting_date_max_days_forward",
    "fieldtype": "Int",
-   "label": "Posting Date - Max Days Forward"
+   "label": "Posting Date - Max Days Forward (0 = no future dating)"
   },
   {
    "fieldname": "scope_section",

@@ -56,8 +56,10 @@ from accountant_agent.agent_api.db.agent_write_repository import (
     has_server_script,
     insert_document,
     next_savepoint_name,
+    read_permitted_documents,
     record_failed_attempt,
     reserve_write_log,
+    run_totals_so_far,
     submit_document,
 )
 
@@ -120,6 +122,15 @@ MAX_CANDIDATES_OFFERED: int = 12
 MAX_CANDIDATE_SCAN: int = 50
 MAX_BULK_REFS: int = 100
 MAX_BATCH_SIZE: int = 50
+
+#: How many existing documents one lifecycle search may offer, across every
+#: DocType it looked in. A person picking "the invoice I meant" out of a list
+#: stops reading long before ten; a longer list is a worse question.
+MAX_DOCUMENTS_OFFERED: int = 10
+
+#: How many DocTypes one search may span. The agent names them from the
+#: request, so this bounds a model's imagination rather than the customer's ERP.
+MAX_SEARCH_DOCTYPES: int = 6
 
 VALID_ACTIONS: frozenset[str] = frozenset({"create", "submit", "cancel", "amend"})
 
@@ -544,6 +555,37 @@ def assert_run_caps(policy: WritePolicy, document_count: int, total_amount: floa
                 "system."
             ).format(total_amount, policy.max_total_amount_per_run)
         )
+
+
+def assert_run_caps_for_run(
+    policy: WritePolicy,
+    run_id: Optional[str],
+    adding_documents: int,
+    adding_amount: float,
+) -> None:
+    """Measure the caps against the WHOLE run, not one request.
+
+    `assert_run_caps` compares two numbers; this decides what those numbers are.
+    A run that writes one document per HTTP call would never approach a ceiling
+    if each call only counted itself, so the committed rows already logged under
+    this run_id are added to what is about to be written.
+
+    TWO PROPERTIES THIS FUNCTION EXISTS TO GUARANTEE:
+
+      * ZERO QUERIES WHEN BOTH CAPS ARE UNLIMITED. Both default to 0, which
+        means unlimited, so the common path must not pay for a feature nobody
+        switched on. The early return is the whole reason the caps can default
+        to off without costing anything.
+      * ONE QUERY PER REQUEST, NEVER ONE PER DOCUMENT. A 400-document import
+        must not become 400 counting queries (project_rules.md section 2). The
+        batch path calls this once with the whole batch and then tells
+        create_document not to repeat it.
+    """
+    if not policy.max_documents_per_run and not policy.max_total_amount_per_run:
+        return
+
+    written, spent = run_totals_so_far(run_id or "")
+    assert_run_caps(policy, written + adding_documents, spent + adding_amount)
 
 
 def assert_not_dry_run(policy: WritePolicy) -> None:
@@ -994,7 +1036,306 @@ def _display_label(row: dict, display_fields: Sequence[str]) -> str:
     return f"{name} ({', '.join(extras[:3])})" if extras else name
 
 
+# ─── Document search ─────────────────────────────────────────────────────────
+
+#: Fields worth reading off ANY document when the DocType happens to have them.
+#: Intersected with the real meta before the query runs: asking for a column
+#: that does not exist is a SQL error, not an empty value.
+_DOCUMENT_FIELDS: tuple[str, ...] = (
+    "name", "docstatus", "modified", "creation", "company", "status", "title",
+    "posting_date", "transaction_date", "due_date",
+    "base_grand_total", "grand_total", "total_debit", "paid_amount", "total",
+    "customer", "customer_name", "supplier", "supplier_name",
+    "party", "party_type", "party_name", "bill_no", "cheque_no",
+)
+
+#: Fields a person's own words might match. Deliberately identity and party
+#: names only: matching free text against a remarks field turns "the invoice
+#: for the office rent" into every document anybody ever wrote a note on.
+_DOCUMENT_SEARCH_FIELDS: tuple[str, ...] = (
+    "name", "title", "customer", "customer_name", "supplier", "supplier_name",
+    "party", "party_name", "bill_no", "cheque_no",
+)
+
+#: In order. The first one the DocType has is the figure an accountant would
+#: read off the document.
+_DOCUMENT_AMOUNT_FIELDS: tuple[str, ...] = (
+    "base_grand_total", "grand_total", "total_debit", "paid_amount", "total",
+)
+
+#: The date the document is filed under, best first.
+_DOCUMENT_DATE_FIELDS: tuple[str, ...] = ("posting_date", "transaction_date", "due_date")
+
+
+def search_documents(
+    doctypes: Sequence[str],
+    text: str = "",
+    docstatus: Optional[Sequence[int]] = None,
+    limit: int = MAX_DOCUMENTS_OFFERED,
+    company: Optional[str] = None,
+) -> dict:
+    """Recent documents matching what somebody described, across DocTypes.
+
+    WHY THIS EXISTS
+        The agent could only ever post or reverse a document it had created
+        itself, because the only list it could read was its own write log. That
+        is safe and it is also useless the moment an accountant says "submit
+        the Zuckerman invoice" about an invoice a human typed last Tuesday —
+        the agent answered that it had not recorded anything, which is true and
+        beside the point.
+
+    WHAT REPLACES THE OLD BOUNDARY
+        Reading is bounded by the ERP's own permissions (see
+        read_permitted_documents) and acting is bounded by them too — submit,
+        cancel and amend each check the agent user's permission on the DocType.
+        Between the two sits the rule the agent keeps for itself: a document
+        found HERE is never acted on until a human has picked it out by name.
+
+    Every DocType that cannot be searched is named in `unavailable` with a
+    reason. A silently dropped DocType would read as "you have no such
+    document", which is the one answer that must never be guessed at. So is
+    `total_matched`, for the same reason one rung down: a list cut off at ten
+    of forty must say so, or the eleventh document — the one they meant — looks
+    like a document they do not have.
+    """
+    wanted = [str(d).strip() for d in (doctypes or []) if str(d).strip()]
+    if not wanted:
+        raise MissingParameterError(_("Name at least one document type to search."))
+    if len(wanted) > MAX_SEARCH_DOCTYPES:
+        raise MissingParameterError(
+            _("At most {0} document types may be searched at once.").format(
+                MAX_SEARCH_DOCTYPES
+            )
+        )
+
+    limit = max(1, min(int(limit or MAX_DOCUMENTS_OFFERED), MAX_DOCUMENTS_OFFERED))
+    wanted_status = [int(s) for s in (docstatus or []) if str(s).strip() != ""]
+
+    found: list[dict] = []
+    unavailable: list[dict] = []
+    total_matched = 0
+
+    for doctype in dict.fromkeys(wanted):
+        rows, reason, matched = _search_one_doctype(
+            doctype, text=text or "", docstatus=wanted_status,
+            limit=limit, company=company or "",
+        )
+        if reason:
+            unavailable.append({"doctype": doctype, "reason": reason})
+        found.extend(rows)
+        total_matched += matched
+
+    # Newest first ACROSS DocTypes, so "the last invoice" means the last one
+    # whatever kind of invoice it turned out to be. Sorting each DocType
+    # separately and concatenating would put a stale Sales Invoice above
+    # today's Purchase Invoice purely because of the order they were asked for.
+    found.sort(key=lambda row: (row.get("sort_key") or ""), reverse=True)
+    documents = found[:limit]
+    return {
+        "documents": documents,
+        "unavailable": unavailable,
+        # HOW MANY THERE REALLY ARE. Forty invoices match "Grant Plastics", ten
+        # are offered, and without this the question reads as though those ten
+        # are all of them — so the eleventh, which is the one they meant, looks
+        # like a document they do not have.
+        "total_matched": max(total_matched, len(documents)),
+        "truncated": total_matched > len(documents),
+    }
+
+
+def _search_one_doctype(
+    doctype: str, text: str, docstatus: Sequence[int], limit: int, company: str,
+) -> tuple[list[dict], str, int]:
+    """Rows, the reason there are none, and how many there really are."""
+    if not doctype_exists(doctype):
+        return [], "UNKNOWN_DOCTYPE", 0
+
+    meta = get_doctype_meta(doctype)
+    if getattr(meta, "istable", 0):
+        return [], "CHILD_TABLE", 0
+    if getattr(meta, "issingle", 0):
+        return [], "SINGLE_DOCTYPE", 0
+
+    # Asked for drafts or posted documents specifically, on a DocType that has
+    # no such concept. Returning its rows anyway would offer an Item as
+    # something to submit; the ERP would refuse, one turn later and less
+    # clearly.
+    if docstatus and not getattr(meta, "is_submittable", 0):
+        return [], "NOT_SUBMITTABLE", 0
+
+    available = {df.fieldname for df in meta.fields} | {"name", "docstatus", "modified",
+                                                        "creation", "owner"}
+    fields = [f for f in _DOCUMENT_FIELDS if f in available]
+    search_fields = [f for f in _DOCUMENT_SEARCH_FIELDS if f in available] or ["name"]
+
+    filters: list[list] = []
+    if docstatus:
+        filters.append(["docstatus", "in", list(docstatus)])
+    if company and "company" in available:
+        filters.append(["company", "=", company])
+
+    date_field = next((f for f in _DOCUMENT_DATE_FIELDS if f in available), "")
+    order_by = f"{date_field} desc, modified desc" if date_field else "modified desc"
+
+    try:
+        rows, or_filters = _documents_with_widening(
+            doctype=doctype, text=text, search_fields=search_fields,
+            filters=filters, fields=fields, limit=limit, order_by=order_by,
+        )
+        # Counted only when the page came back full: a page with room to spare
+        # IS the whole result, and counting it would spend a query to learn a
+        # number we already have.
+        matched = (
+            count_link_candidates(doctype, filters, or_filters)
+            if len(rows) >= limit else len(rows)
+        )
+    except frappe.PermissionError:
+        # A legitimate customer configuration, not an error: this agent user
+        # has not been given read access to this DocType.
+        return [], "READ_NOT_PERMITTED", 0
+
+    return [_document_row(doctype, row, date_field) for row in rows], "", matched
+
+
+def _documents_with_widening(
+    doctype: str, text: str, search_fields: Sequence[str], filters: list,
+    fields: list[str], limit: int, order_by: str,
+) -> tuple[list[dict], Optional[list]]:
+    """Walk the same LIKE ladder the candidate search uses, for the same reason.
+
+    An accountant who types "Zuckerman Security" about "Zuckerman Security Ltd."
+    has named the document; a single `LIKE '%<the whole phrase>%'` would not
+    find it. No text at all means "the most recent ones", which is what "submit
+    the last invoice" actually asks for.
+    """
+    patterns = _like_patterns(text)
+    if not patterns:
+        rows = read_permitted_documents(
+            doctype=doctype, filters=filters, or_filters=None,
+            fields=fields, limit=limit, order_by=order_by,
+        )
+        return rows, None
+
+    for pattern in patterns:
+        or_filters = [[field, "like", pattern] for field in search_fields]
+        rows = read_permitted_documents(
+            doctype=doctype, filters=filters, or_filters=or_filters,
+            fields=fields, limit=limit, order_by=order_by,
+        )
+        if rows:
+            return rows, or_filters
+    return [], None
+
+
+def _document_row(doctype: str, row: dict, date_field: str) -> dict:
+    """One document in the shape every caller above this layer already reads.
+
+    Same keys as get_document_state, plus the three things a person needs to
+    recognise their own paperwork on sight: who it is with, what state it is
+    in, and when it was filed.
+    """
+    posting_date = str(row.get(date_field) or "") if date_field else ""
+    return {
+        "doctype": doctype,
+        "docname": row.get("name"),
+        "docstatus": int(row.get("docstatus") or 0),
+        "amount": _row_amount(row),
+        "posting_date": posting_date,
+        "company": row.get("company"),
+        "party": _row_party(row),
+        "status": row.get("status") or "",
+        "title": row.get("title") or "",
+        # What "newest" is sorted by. The posting date is what an accountant
+        # means by it; `modified` is the fallback for a DocType that has none.
+        "sort_key": posting_date or str(row.get("modified") or ""),
+    }
+
+
+def _row_amount(row: dict) -> Optional[float]:
+    for fieldname in _DOCUMENT_AMOUNT_FIELDS:
+        value = row.get(fieldname)
+        if value:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _row_party(row: dict) -> str:
+    for fieldname in ("customer_name", "customer", "supplier_name", "supplier",
+                      "party_name", "party"):
+        value = row.get(fieldname)
+        if value:
+            return str(value)
+    return ""
+
+
 # ─── Preflight ───────────────────────────────────────────────────────────────
+
+
+#: Columns the FRAMEWORK owns. A caller may never set one, whoever the caller
+#: is and however the value got into the payload.
+#:
+#: `docstatus` IS THE WHOLE REASON THIS EXISTS.
+#:     `frappe.get_doc(payload).insert()` keeps whatever docstatus the payload
+#:     carries — `set_docstatus()` defaults a missing one to 0 and does not
+#:     force a supplied one back. So a single `"docstatus": 1` inserts a
+#:     document that is ALREADY POSTED: no `check_permission("submit")`, no
+#:     workflow, and — because `insert()` is not `submit()` — none of the
+#:     DocType's `on_submit` work. For a Journal Entry that is a voucher the
+#:     ledger shows as posted with no GL Entries behind it, which is worse than
+#:     a refused write by a wide margin.
+#:
+#:     There is no legitimate reason for any caller of this gateway to name it.
+#:     Posting is `submit_existing_document`, which is permission-checked,
+#:     logged, and reversible.
+#:
+#: The rest are identity and audit columns: a name, an owner or a creation
+#: timestamp supplied by a caller is a record that lies about itself.
+_CALLER_MUST_NOT_SET: frozenset[str] = frozenset(
+    {
+        "docstatus", "name", "owner", "creation", "modified", "modified_by",
+        "amended_from", "parent", "parenttype", "parentfield", "idx",
+        "__islocal", "__unsaved", "__run_link_triggers", "__newname",
+    }
+)
+
+
+def _only_the_caller_s_fields(payload: dict) -> dict:
+    """The payload with every framework-owned column removed, recursively.
+
+    Applied to child rows as well: a `docstatus` on a Journal Entry Account row
+    is copied onto the row by the framework, and one supplied by a caller is
+    the same class of lie as one on the parent.
+
+    Silent by design. A caller that names one of these has not made a mistake
+    worth an error message to an accountant; it has named a column that is not
+    theirs, and the correct response is that it has no effect.
+    """
+    if not isinstance(payload, dict):
+        return payload
+
+    cleaned: dict = {}
+    for key, value in payload.items():
+        if str(key).strip().lower() in _CALLER_MUST_NOT_SET:
+            if str(key).strip().lower() == "docstatus":
+                frappe.logger("accountant_agent").info(
+                    "Ignored a caller-supplied docstatus on %s; documents are "
+                    "created as drafts and posted only through submit.",
+                    payload.get("doctype") or "a document",
+                )
+            continue
+        if isinstance(value, list):
+            cleaned[key] = [
+                _only_the_caller_s_fields(row) if isinstance(row, dict) else row
+                for row in value
+            ]
+        else:
+            cleaned[key] = value
+    return cleaned
+
+
 
 
 def preflight_document(payload: dict, run_dry_run: bool = True) -> dict:
@@ -1017,6 +1358,10 @@ def preflight_document(payload: dict, run_dry_run: bool = True) -> dict:
         raise ResourceNotFoundError(_("Document type '{0}' does not exist.").format(doctype))
 
     findings: list[PreflightFinding] = []
+    # Judged as it will be WRITTEN. The scrub below runs on the real write too,
+    # so preflighting the unscrubbed payload would validate a document that
+    # never reaches the database.
+    payload = _only_the_caller_s_fields(payload)
     doc = frappe.get_doc(payload)
     _prepare_like_insert(doc)
 
@@ -1449,6 +1794,41 @@ def _payload_digest(payload: dict) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _payload_amount(payload: dict) -> float:
+    """Best-effort transaction size BEFORE the ERP fills the totals in.
+
+    `_document_amount` reads totals ERPNext computes during insert - they do not
+    exist at cap-check time, which is the only moment a cap can still refuse.
+    A journal entry arrives as rows, so the debit side is summed; an invoice
+    arrives with line amounts. Whichever amount field a row carries first is the
+    one used, so debits are never double-counted against credits.
+
+    RETURNS A FLOAT, NEVER None. `_document_amount` returns None for every
+    non-monetary document type, and summing None across a batch raises
+    TypeError - which would turn a policy check into a crashed import. An
+    unpriced document counts as zero against a money cap, which is what it is.
+    """
+    headline = _document_amount(payload or {})
+    if headline:
+        return abs(float(headline))
+
+    total = 0.0
+    for value in (payload or {}).values():
+        if not isinstance(value, list):
+            continue
+        for row in value:
+            if not isinstance(row, dict):
+                continue
+            for fieldname in ("debit_in_account_currency", "debit", "amount", "base_amount"):
+                if row.get(fieldname):
+                    try:
+                        total += abs(float(row[fieldname]))
+                    except (TypeError, ValueError):
+                        pass
+                    break
+    return total
+
+
 def _document_amount(doc: Any) -> Optional[float]:
     """Best-effort headline amount, for the write log and the run caps."""
     for fieldname in ("base_grand_total", "grand_total", "total_debit", "base_paid_amount", "paid_amount"):
@@ -1471,6 +1851,7 @@ def create_document(
     session_id: Optional[str] = None,
     approved_by: Optional[str] = None,
     savepoint_ordinal: int = 0,
+    enforce_run_caps: bool = True,
 ) -> dict:
     """Create one document, idempotently, as the agent user.
 
@@ -1493,6 +1874,11 @@ def create_document(
     if not doctype:
         raise MissingParameterError(_("Missing doctype in payload."))
 
+    # BEFORE THE DIGEST AND BEFORE THE CAPS, so that what is hashed, what is
+    # capped and what is inserted are the same document. See
+    # `_CALLER_MUST_NOT_SET`: a create NEVER posts, whatever the payload says.
+    payload = _only_the_caller_s_fields(payload)
+
     policy = load_write_policy()
     assert_write_policy_enabled(policy)
     assert_not_dry_run(policy)
@@ -1508,6 +1894,15 @@ def create_document(
             "docstatus": prior.get("docstatus_written"),
             "idempotency_key": idempotency_key,
         }
+
+    # AFTER the replay check, deliberately. A REPLAY is a document that already
+    # exists and is already counted in the run's totals; refusing it on a cap
+    # would break idempotency, and the caller - which retries precisely because
+    # it does not know the outcome - would never be able to learn it.
+    #
+    # Skipped when a batch has already counted the whole run in one query.
+    if enforce_run_caps:
+        assert_run_caps_for_run(policy, run_id, 1, _payload_amount(payload))
 
     digest = _payload_digest(payload)
     savepoint = next_savepoint_name(savepoint_ordinal)
@@ -1651,7 +2046,9 @@ def amend_existing_document(
         session_id=session_id,
         approved_by=approved_by,
         savepoint_ordinal=savepoint_ordinal,
-        operation=lambda: amend_document(doctype, docname, payload),
+        operation=lambda: amend_document(
+            doctype, docname, _only_the_caller_s_fields(payload),
+        ),
     )
 
 
@@ -1774,6 +2171,17 @@ def create_documents_batch(
     assert_write_policy_enabled(policy)
     assert_not_dry_run(policy)
 
+    # ONE query for the whole batch, before a single row is written. Checking
+    # per document would be 400 aggregate queries on a 400-row import, and it
+    # would also let a batch that breaches the ceiling write everything up to
+    # the row that crosses it - a half-applied import nobody asked for.
+    assert_run_caps_for_run(
+        policy,
+        run_id,
+        len(documents),
+        sum(_payload_amount(entry.get("payload") or {}) for entry in documents),
+    )
+
     results: list[dict] = []
     created = replayed = rejected = 0
 
@@ -1788,6 +2196,7 @@ def create_documents_batch(
                 session_id=session_id,
                 approved_by=approved_by,
                 savepoint_ordinal=ordinal,
+                enforce_run_caps=False,
             )
             outcome["ordinal"] = ordinal
             outcome["source_row_ordinal"] = entry.get("source_row_ordinal")

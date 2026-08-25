@@ -261,9 +261,15 @@ def ensure_write_policy() -> None:
         policy.enabled = 0
         policy.require_approval = 1
         policy.dry_run_only = 0
-        policy.max_documents_per_run = 100
+        # Every blast-radius limit ships OPEN, because 0 means unlimited and an
+        # agent that silently refuses the 101st document of a real import is a
+        # support ticket, not a safety feature. What actually keeps a fresh
+        # install safe is `enabled = 0` above: the agent cannot write at all
+        # until a human turns it on. The frozen-period check refuses entries in
+        # a closed accounting period whatever the back-dating number says.
+        policy.max_documents_per_run = 0
         policy.max_total_amount_per_run = 0
-        policy.posting_date_max_days_back = 90
+        policy.posting_date_max_days_back = 0
         policy.posting_date_max_days_forward = 0
         policy.flags.ignore_permissions = True
         policy.save(ignore_permissions=True)

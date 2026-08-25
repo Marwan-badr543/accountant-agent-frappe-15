@@ -58,6 +58,7 @@ from accountant_agent.agent_api.services.agent_write_service import (
     load_write_policy,
     preflight_document,
     search_candidates_bulk,
+    search_documents,
     submit_existing_document,
 )
 
@@ -190,6 +191,41 @@ def list_documents(limit: Optional[int] = None, doctype: Optional[str] = None) -
         return _error(exc)
     except Exception:
         return _unexpected("list_documents")
+
+
+@frappe.whitelist()
+def search_documents_endpoint(
+    doctypes: Optional[str] = None,
+    text: Optional[str] = None,
+    docstatus: Optional[str] = None,
+    limit: Optional[int] = None,
+    company: Optional[str] = None,
+) -> dict:
+    """Existing documents matching what the user described, whoever wrote them.
+
+    Read-only, so it runs the agent-session assertion and nothing else. What it
+    returns is filtered by the agent user's own read permissions inside
+    frappe.get_list — this endpoint grants no access the customer has not
+    already granted that user, and it exposes no path that changes anything.
+    """
+    try:
+        assert_session_is_agent_user()
+        raw_types = doctypes if doctypes is not None else frappe.form_dict.get("doctypes")
+        raw_status = docstatus if docstatus is not None else frappe.form_dict.get("docstatus")
+        return search_documents(
+            doctypes=_parse_json_param(raw_types, "doctypes"),
+            text=str(text or frappe.form_dict.get("text") or ""),
+            # Absent means "any state". An empty list would mean the same, and
+            # a caller that sent one must not be handed a docstatus filter of
+            # `[]`, which matches nothing.
+            docstatus=_parse_json_param(raw_status, "docstatus") if raw_status else None,
+            limit=int(limit or 0) or None,
+            company=company or frappe.form_dict.get("company") or None,
+        )
+    except AgentWriteError as exc:
+        return _error(exc)
+    except Exception:
+        return _unexpected("search_documents")
 
 
 @frappe.whitelist()

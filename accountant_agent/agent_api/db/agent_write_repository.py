@@ -239,6 +239,74 @@ def find_stranded_in_flight(older_than_minutes: int = 60) -> list[dict]:
     )
 
 
+def run_totals_so_far(run_id: str) -> tuple[int, float]:
+    """How much this run has already written: document count and money.
+
+    The run's own history, read in ONE aggregate query. A per-run ceiling that
+    only ever sees the request in front of it is not a ceiling - a run writing
+    one document per call would never reach any limit - so the committed rows
+    for this run_id are what the caps are measured against.
+
+    get_list, not get_all: this reads the customer's own audit table and their
+    permission configuration applies to it exactly as it does to everything
+    else in this module.
+    """
+    if not run_id:
+        return 0, 0.0
+
+    rows = frappe.get_list(
+        "Agent Write Log",
+        filters={
+            "status": "COMMITTED",
+            "agent_user": frappe.session.user,
+            "run_id": run_id,
+        },
+        fields=["count(name) as documents", "sum(amount_written) as spent"],
+    )
+    if not rows:
+        return 0, 0.0
+
+    row = rows[0]
+    return int(row.get("documents") or 0), float(row.get("spent") or 0.0)
+
+
+# ─── Document search ─────────────────────────────────────────────────────────
+
+
+def read_permitted_documents(
+    doctype: str,
+    filters: list,
+    or_filters: Optional[list],
+    fields: list[str],
+    limit: int,
+    order_by: str,
+) -> list[dict]:
+    """Documents of one DocType that the AGENT USER is allowed to see.
+
+    frappe.get_list, and the choice is load-bearing rather than stylistic.
+    read_link_candidates next door uses get_all on purpose: recognising that
+    "Laptop" means SKU002 is a name lookup on master data, and gating it would
+    make the agent unable to read the customer's own item list.
+
+    This is not that. These are the customer's transactions, and they are read
+    so the agent can offer to POST or REVERSE one of them. get_list applies the
+    agent user's roles, their User Permissions and every permission query
+    condition on the DocType, so a robot restricted to one company is offered
+    one company's invoices — and a DocType it may not read raises
+    frappe.PermissionError here rather than leaking a row.
+
+    No ignore_permissions, no raw SQL, and no path that mutates anything.
+    """
+    return frappe.get_list(
+        doctype,
+        filters=filters,
+        or_filters=or_filters,
+        fields=fields,
+        limit_page_length=limit,
+        order_by=order_by,
+    )
+
+
 # ─── Document API writes ─────────────────────────────────────────────────────
 
 
@@ -310,10 +378,16 @@ def has_server_script(doctype: str) -> bool:
 def list_written_documents(limit: int = 20, target_doctype: Optional[str] = None) -> list[dict]:
     """Documents this agent actually created, newest first.
 
-    The authority for "did the agent write this?". The agent may only submit,
-    cancel or amend a document it created itself - reversing a human's journal
-    entry on a misunderstood instruction is unthinkable, so it is blocked
-    structurally rather than by prompt.
+    The authority for "did the agent write this?", and still the FIRST place a
+    lifecycle request is resolved: a document the agent wrote itself, in a
+    state where the requested action is possible, is acted on without a
+    question, because there is nothing to be wrong about.
+
+    It is no longer the ONLY place. read_permitted_documents searches the
+    customer's own documents too, so "post the Zuckerman invoice" works on an
+    invoice a human typed. What kept a misunderstood instruction off a human's
+    journal entry was this list; what keeps it off now is that a document found
+    anywhere else is never acted on until a person has picked it out by name.
 
     Scoped to the session user, which is always the agent (the router asserts
     it), so one customer's log can never surface in another's.

@@ -5,3 +5,4 @@
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
 accountant_agent.patches.v1_0.backfill_agent_api_key_hash
+accountant_agent.patches.v1_0.relax_default_agent_write_caps
