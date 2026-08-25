@@ -109,8 +109,20 @@ function render_usage_dashboard(frm, data, email) {
 			<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
 				<div style="display: flex; align-items: center; gap: 8px;">
 					<i class="fa fa-pie-chart" style="color: #10a37f; font-size: 18px;"></i>
-					<h4 style="margin: 0; font-weight: 700; font-size: 16px; color: var(--text-color, #111827);">
+					<h4 style="margin: 0; font-weight: 700; font-size: 16px; color: var(--text-color, #111827); display: flex; align-items: center; gap: 8px;">
 						${__('API Resource Usage')}
+						<span class="plan-badge" style="
+							font-size: 11px;
+							font-weight: 700;
+							text-transform: uppercase;
+							padding: 2px 8px;
+							border-radius: 12px;
+							background-color: ${data.plan === 'ultra' ? '#f5f3ff' : data.plan === 'pro' ? '#eff6ff' : '#f3f4f6'};
+							color: ${data.plan === 'ultra' ? '#7c3aed' : data.plan === 'pro' ? '#2563eb' : '#4b5563'};
+							border: 1px solid ${data.plan === 'ultra' ? '#ddd6fe' : data.plan === 'pro' ? '#bfdbfe' : '#e5e7eb'};
+						">
+							${__(data.plan || 'free')}
+						</span>
 					</h4>
 				</div>
 				<button class="btn btn-default btn-xs btn-refresh-usage" style="border-radius: 6px; font-weight: 500;">

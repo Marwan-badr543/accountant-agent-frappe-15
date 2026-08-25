@@ -185,7 +185,7 @@ def get_user_usage(email: str) -> dict:
     endpoint that accepted any e-mail would report one customer's consumption
     to another.
     """
-    zero: dict = {"daily_usage_percentage": 0.0, "total_usage_percentage": 0.0}
+    zero: dict = {"daily_usage_percentage": 0.0, "total_usage_percentage": 0.0, "plan": "free"}
 
     doc = _get_own_settings_doc(email)
     if not doc:
@@ -220,6 +220,7 @@ def get_user_usage(email: str) -> dict:
         return {
             "daily_usage_percentage": round(data.get("daily_usage_percentage", 0.0), 1),
             "total_usage_percentage": round(data.get("total_usage_percentage", 0.0), 1),
+            "plan": data.get("plan", "free"),
         }
     except Exception as exc:
         frappe.log_error(
