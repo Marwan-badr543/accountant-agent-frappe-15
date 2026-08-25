@@ -339,6 +339,28 @@ _CARRIED_MARKUP = re.compile(
 #: legacy span. Both shapes carry the identical JSON.
 _QUESTION_PAYLOAD = re.compile(r'data-questions="([A-Za-z0-9+/=]+)"')
 
+#: What the customer answered, out of the block that asked it.
+#:
+#: MATCHED ON A CLASS, NEVER ON THE LABEL. The label is translated — a site
+#: running in Arabic writes "أجبت:" — so a regex for the English words finds
+#: nothing there and the answer is silently dropped from both the model's
+#: history and the "has this been answered?" test. The class is the same
+#: string in every language.
+_ANSWERED = re.compile(
+	r'<span[^>]*class="agent-answer"[^>]*>(.*?)</span>', re.IGNORECASE | re.DOTALL,
+)
+
+#: The wrapper that carries it. What this marks is the whole line, so the
+#: customer reads it and the renderer can still find it.
+_ANSWER_BLOCK = '<span class="agent-answer">{label}</span>'
+
+#: On the fold itself, so the browser can tell an open question from a
+#: settled one WITHOUT parsing the body. The answer picker reopens only for
+#: a question still waiting; without this it would reopen on an exchange
+#: that finished ten minutes ago, because the block is still the last
+#: message in the session.
+_ANSWERED_FLAG = ' data-answered="1"'
+
 
 def _questions_only(content: str) -> str:
 	"""The questions out of a stored question turn, and nothing else.
@@ -385,6 +407,22 @@ def _questions_only(content: str) -> str:
 		for q in questions
 		if isinstance(q, dict) and str(q.get("question") or "").strip()
 	]
+	if not asked:
+		return ""
+
+	# AND THE ANSWER, WHICH NOW LIVES IN THE SAME ROW.
+	#
+	# This is the one place the fold can silently break the thing it was built
+	# for. Reading only the payload would hand the model the question and drop
+	# the reply — *"these questions go with chat history to llm so it can
+	# understand the context and never ask user the same questions again"* is
+	# the reply, not the question.
+	#
+	# Taken from the rendered body rather than from the payload, because the
+	# payload is what was ASKED and the answer was never in it.
+	said = _ANSWERED.search(content or "")
+	if said:
+		asked.append(unescape(said.group(1)).strip())
 	return "\n".join(asked)
 
 
@@ -660,7 +698,18 @@ def send_message(message, session_id, agent_email, agent_type="auto", file_urls=
 	elif message.startswith("Clarification Response:"):
 		said = _answer_text(message)
 		if said:
-			save_chat_history(session_id, "human", said)
+			# INSIDE THE QUESTION IT ANSWERS, so the exchange is one block the
+			# customer can open and close: *"it should appear in the chat so
+			# user can see lasy question and his reply, and it should be
+			# collabsable"*.
+			#
+			# FALLING BACK IS NOT OPTIONAL. If there is no question to fold
+			# into — a reply that arrived after a reload, a row written by an
+			# older build — the answer is stored on its own. A duplicated
+			# answer is cosmetic; a lost one is the complaint that started all
+			# of this.
+			if not fold_the_answer_in(session_id, said):
+				save_chat_history(session_id, "human", said)
 			update_chat_timestamp(session_id)
 	else:
 		save_chat_history(session_id, "human", message)
@@ -979,48 +1028,48 @@ def _readable_response(ai_response: str) -> tuple:
 	return (spoken or ai_response), (questions if isinstance(questions, list) else [])
 
 
-def _collapsible_question(spoken: str, questions: list) -> str:
-	"""The question as it belongs in a transcript: the question, and nothing else.
+def _collapsible_question(spoken: str, questions: list, answer: str = "") -> str:
+	"""The question as it belongs in a transcript, with the answer inside it.
 
-	THE REQUEST, IN FOUR PARTS, AND THE FOURTH ONE WAS ANGRY
+	THE REQUEST, IN FIVE PARTS, AND IT HAS BEEN THE SAME REQUEST EVERY TIME
 		*"user qustions should stored in history wiht user reply"*, then
 		*"questions to the user should not saved to the chat with its options,
 		just save the question and the answer that the user choosed"*, then
 		*"it should be collabsable so user can oben or close to save chat window
-		space in ui"*, and then: *"i said before the question should saved with
-		just user answer, but you saved the question with all option so next
-		nodes can not know whawt the user say here, so its the third time i tell
-		you that"*.
+		space in ui"*, then *"i said before the question should saved with just
+		user answer, but you saved the question with all option"*, and now:
+		*"i siad save qestions and its answer in chat history and it should
+		appear in the chat so user can see lasy question and his reply, and it
+		should be collabsable so user can open and close"*.
 
-		The first three were implemented against `spoken`, which is the RENDERED
-		CARD — the question with everything the agent wrapped around it. So the
-		fold was right and its contents were not:
+	SO IT IS ONE BLOCK, AND BOTH HALVES ARE IN IT
+		The summary is the question, closed by default — one line of chat window
+		per exchange. Open it and there is what they answered. A conversation
+		that recorded eight documents is eight lines, and every one of them can
+		be opened to see what was decided.
 
-			Sorry — I could not match "don't recodr , they are draft, just
-			submit them" to a record in your system, so I do not want to guess.
-			Before I record this, let me check one thing with you.
-			Tell me the name as it appears in your books and I will carry on ...
+		The previous attempt made a lone question plain text, on the reasoning
+		that a fold with nothing in it is a control that does nothing. That was
+		true of a fold with nothing in it, and the answer is not to remove the
+		fold — it is to put the answer inside it, which is what was asked for
+		three times before.
 
-		Three lines of the agent's own scaffolding stored under every question,
-		and handed back to the model on the next turn. NOTHING IS BUILT FROM
-		`spoken` NOW. The questions are structured data and that is the only
-		thing this reads.
+	WRITTEN TWICE: ONCE WITHOUT THE ANSWER, ONCE WITH IT
+		The question is stored the moment the agent pauses, because the customer
+		is looking at it then and a reload must not lose it. When they answer,
+		`fold_the_answer_in` rewrites that same row through here with `answer`
+		filled in. Nothing is stored twice and nothing is lost if the rewrite
+		never happens — an unanswered question is a fold with the question in it.
 
-	A SINGLE QUESTION IS NOT FOLDED, BECAUSE THERE IS NOTHING LEFT TO FOLD
-		One line is already one line. A `<details>` around it would open onto an
-		empty box, which is worse than no control at all. The fold appears when
-		it earns its place: two or more questions, one summary line, the rest
-		tucked away.
+	THE OPTIONS ARE NOT STORED AND NEVER WERE. The choice has been made; the
+	answer is the next line inside the same block, and the roads not taken are
+	dead weight in a transcript read by a model with a character budget.
 
-	THE PICKER MUST STILL REOPEN AFTER A RELOAD
-		The transcript renderer reopens the answer picker when the last stored
-		message is a question the agent is still waiting on, and it finds the
-		questions by their `data-questions` attribute. So the structured
-		questions ride along either way — on the fold when there is one, and on
-		the invisible span when there is not. Base64 rather than escaped JSON on
-		purpose: the payload then contains no character that HTML, Markdown or
-		the no-Markdown fallback can react to, and Arabic question text survives
-		it intact.
+	THE PICKER MUST STILL REOPEN AFTER A RELOAD. The transcript renderer finds
+	the questions by their `data-questions` attribute, so the structured
+	questions ride along on the block. Base64 rather than escaped JSON on
+	purpose: the payload then contains no character that HTML, Markdown or the
+	no-Markdown fallback can react to, and Arabic question text survives it.
 	"""
 	if not spoken or not questions:
 		return spoken
@@ -1037,23 +1086,96 @@ def _collapsible_question(spoken: str, questions: list) -> str:
 		json.dumps(questions, ensure_ascii=False).encode("utf-8")
 	).decode("ascii")
 
-	if len(asked) == 1:
-		return asked[0] + "\n\n" + _QUESTION_DATA.format(packed=packed)
+	headline = asked[0]
+	if len(asked) > 1:
+		headline = _("{0} (and {1} more)").format(headline, len(asked) - 1)
 
-	headline = _("{0} (and {1} more)").format(asked[0], len(asked) - 1)
-	folded = "\n".join(
-		f"{index}. {question}" for index, question in enumerate(asked[1:], 2)
-	)
+	body = "\n".join(f"{index}. {question}" for index, question in enumerate(asked[1:], 2))
+
+	said = (answer or "").strip()
+	if said:
+		# THEIR OWN WORDS, LABELLED AND MARKED. The label is for the customer
+		# and is translated; the class is for the renderer and never is.
+		body = (body + "\n\n" if body else "") + _ANSWER_BLOCK.format(
+			label=escape(_("You answered: {0}").format(said)),
+		)
+
+	if not body:
+		# NOTHING TO PUT INSIDE IT YET — the question has been asked and not yet
+		# answered. A `<details>` opening onto an empty box is a control that
+		# does nothing, so it stays a plain line until the answer arrives and
+		# `fold_the_answer_in` rewrites it.
+		return asked[0] + "\n\n" + _QUESTION_DATA.format(packed=packed)
 
 	# The blank line after </summary> is load-bearing: without it a Markdown
 	# renderer treats the body as raw HTML and the content comes out as one
 	# unformatted run-on line.
+	settled = _ANSWERED_FLAG if said else ""
 	return (
-		f'<details class="agent-question" data-questions="{packed}">\n'
+		f'<details class="agent-question" data-questions="{packed}"{settled}>\n'
 		f"<summary>{escape(headline)}</summary>\n\n"
-		f"{folded}\n"
+		f"{body}\n"
 		"</details>"
 	)
+
+
+def fold_the_answer_in(session_id: str, answer: str) -> bool:
+	"""Put what they just answered inside the question that asked it.
+
+	Returns True when a question was found and rewritten, and False when there
+	was nothing to fold into — in which case the caller stores the answer as its
+	own message, because a lost answer is far worse than a duplicated one. That
+	failure has happened before: *"it also deleted, so user qustions should
+	stored in history wiht user reply"*.
+
+	THE MOST RECENT QUESTION IN THIS SESSION, and only if it is still open. A
+	block that already has an answer in it belongs to an earlier exchange, and
+	writing a second answer into it would attribute this reply to a question
+	somebody answered ten minutes ago.
+	"""
+	said = (answer or "").strip()
+	if not session_id or not said:
+		return False
+
+	try:
+		recent = frappe.get_all(
+			"Agent Chat History",
+			filters={"session_id": session_id, "sender": "ai"},
+			fields=["name", "content"],
+			order_by="creation desc",
+			limit=1,
+		)
+		if not recent:
+			return False
+
+		row = recent[0]
+		content = row.content or ""
+		match = _QUESTION_PAYLOAD.search(content)
+		if not match:
+			return False
+		if _ANSWERED.search(content):
+			return False
+
+		questions = json.loads(b64decode(match.group(1)).decode("utf-8"))
+		if not isinstance(questions, list):
+			return False
+
+		frappe.db.set_value(
+			"Agent Chat History", row.name, "content",
+			_collapsible_question(
+				str(questions[0].get("question") or "") if questions else content,
+				questions,
+				answer=said,
+			),
+		)
+		frappe.db.commit()
+		return True
+	except Exception as exc:
+		frappe.log_error(
+			title="Accountant Agent: fold the answer in",
+			message=f"Could not attach the answer in session {session_id}: {exc}",
+		)
+		return False
 
 
 #: THE CARRIER FOR A QUESTION THAT IS NOT FOLDED. Invisible in the transcript,

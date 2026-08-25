@@ -103,9 +103,10 @@ class StoredQuestionTests(unittest.TestCase):
 		self.assertNotIn("Before I record this", stored)
 		self.assertNotIn("pick from the list below", stored)
 
-	def test_a_lone_question_is_not_folded_because_there_is_nothing_to_fold(self):
+	def test_a_lone_unanswered_question_is_not_folded(self):
 		"""One line is already one line, and a fold that opens onto an empty box
-		is a control that does nothing."""
+		is a control that does nothing. It becomes a fold the moment there is
+		an answer to put inside it — see `TheAnswerLivesInTheQuestionTests`."""
 		stored = _collapsible_question(CARD, ONE)
 		self.assertNotIn("<details", stored)
 		self.assertNotIn("<summary>", stored)
@@ -218,6 +219,97 @@ if __name__ == "__main__":
 	unittest.main()
 
 
+class TheAnswerLivesInTheQuestionTests(unittest.TestCase):
+	"""One block, both halves, and a control that opens it.
+
+	*"i siad save qestions and its answer in chat history and it should appear
+	in the chat so user can see lasy question and his reply, and it should be
+	collabsable so user can open and close."*
+	"""
+
+	def test_an_unanswered_question_is_a_plain_line(self):
+		"""A fold opening onto an empty box is a control that does nothing. It
+		stays a line until there is something to put inside it."""
+		stored = _collapsible_question(CARD, ONE)
+		self.assertNotIn("<details", stored)
+		self.assertIn("من هو العميل في هذه العملية؟", stored)
+
+	def test_the_answer_turns_it_into_something_you_can_open(self):
+		stored = _collapsible_question(CARD, ONE, answer="Grant Plastics Ltd.")
+		self.assertIn("<details", stored)
+		# Closed by default: that is what saves the chat window space.
+		self.assertNotIn("<details open", stored)
+
+		summary = stored.split("<summary>", 1)[1].split("</summary>", 1)[0]
+		self.assertIn("من هو العميل في هذه العملية؟", summary)
+
+		body = stored.split("</summary>", 1)[1]
+		self.assertIn("Grant Plastics Ltd.", body)
+		# LABELLED. Without it an opened fold is two sentences with nothing to
+		# say which of them the customer wrote.
+		self.assertIn("You answered", body)
+
+	def test_the_options_are_still_nowhere_in_it(self):
+		stored = _collapsible_question(CARD, ONE, answer="سجلها كبيع نقدي")
+		# The ANSWER may of course be one of them — they tapped it. What must
+		# not be there is the road not taken.
+		self.assertNotIn("كانت بالآجل", stored)
+		self.assertNotIn("Before I record this", stored)
+
+	def test_a_reload_can_still_offer_the_answers_either_way(self):
+		self.assertEqual(_payload(_collapsible_question(CARD, ONE)), ONE)
+		self.assertEqual(
+			_payload(_collapsible_question(CARD, ONE, answer="Grant Plastics Ltd.")),
+			ONE,
+		)
+
+	def test_several_questions_and_the_answer_share_one_block(self):
+		stored = _collapsible_question(CARD, TWO, answer="15,000")
+		body = stored.split("</summary>", 1)[1]
+		self.assertIn("How much was it?", body)
+		self.assertIn("15,000", body)
+
+	def test_a_settled_block_is_flagged_so_the_picker_stays_shut(self):
+		"""THE ONE THING THE FOLD BREAKS IF NOBODY THINKS ABOUT IT.
+
+		The answer lives inside the question now, so a finished exchange is
+		still the LAST message in the session. The browser reopens the answer
+		picker for the last message when it carries questions — which would
+		put the picker back up for something answered ten minutes ago.
+		"""
+		open_still = _collapsible_question(CARD, TWO)
+		self.assertNotIn('data-answered="1"', open_still)
+
+		settled = _collapsible_question(CARD, TWO, answer="15,000")
+		self.assertIn('data-answered="1"', settled)
+
+	def test_the_marker_is_a_class_and_never_the_translated_words(self):
+		"""A site running in Arabic writes "أجبت:", so a check for the English
+		label finds nothing there — and the answer would be silently dropped
+		from the model's history AND from the "has this been answered?" test,
+		for exactly the customers who complain about it most."""
+		from accountant_agent.accountant_agent.page.agent_chat.agent_chat import (
+			_ANSWERED,
+		)
+
+		stored = _collapsible_question(CARD, ONE, answer="Grant Plastics Ltd.")
+		found = _ANSWERED.search(stored)
+		self.assertIsNotNone(found)
+		self.assertIn("Grant Plastics Ltd.", found.group(1))
+
+	def test_an_answer_is_never_written_over_an_older_one(self):
+		"""`fold_the_answer_in` refuses a block that already carries a reply.
+		Writing a second answer into it would attribute this message to a
+		question somebody settled earlier."""
+		from accountant_agent.accountant_agent.page.agent_chat.agent_chat import (
+			_ANSWERED,
+		)
+
+		settled = _collapsible_question(CARD, ONE, answer="Grant Plastics Ltd.")
+		self.assertTrue(_ANSWERED.search(settled), "a settled block is not detectable")
+		self.assertFalse(_ANSWERED.search(_collapsible_question(CARD, ONE)))
+
+
 class HistoryToTheModelTests(unittest.TestCase):
 	"""What the agent server is sent as the conversation so far.
 
@@ -260,6 +352,25 @@ class HistoryToTheModelTests(unittest.TestCase):
 	def test_an_empty_turn_yields_nothing_to_send(self):
 		self.assertEqual(_prose_only("   "), "")
 		self.assertEqual(_prose_only(None), "")
+
+	def test_the_model_is_sent_the_answer_as_well_as_the_question(self):
+		"""THE ONE PLACE THE FOLD CAN SILENTLY BREAK WHAT IT WAS BUILT FOR.
+
+		*"these questions go with chat history to llm so it can understand the
+		context and never ask user the same questions again"* — and it is the
+		ANSWER that stops it asking again. Reading only the payload would hand
+		the model the question and drop the reply.
+		"""
+		prose = _prose_only(
+			_collapsible_question(CARD, ONE, answer="Grant Plastics Ltd.")
+		)
+		self.assertIn("من هو العميل في هذه العملية؟", prose)
+		self.assertIn("Grant Plastics Ltd.", prose)
+		# In that order: the question, then what came back.
+		self.assertLess(prose.index("العميل"), prose.index("Grant"))
+		self.assertNotIn("data-questions", prose)
+		self.assertNotIn("<details", prose)
+
 
 	def test_the_model_is_sent_the_question_and_none_of_the_scaffolding(self):
 		"""THE BUG THIS PINS, FROM A REAL TRANSCRIPT.

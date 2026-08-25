@@ -254,7 +254,16 @@ class ChatUIManager {
 		//
 		// Unlike the branch below this one, it does NOT return early: the
 		// folded question is a real message and gets drawn like one.
-		if (sender === 'ai' && !has_subsequent && display_content.indexOf('data-questions="') !== -1) {
+		// AND ONLY WHILE IT IS STILL OPEN.
+		//
+		// The answer now lives INSIDE the question block, so a settled exchange
+		// is still the last message in the session — `has_subsequent` is false
+		// for it, and without this test the picker would reopen on a question
+		// the customer answered ten minutes ago. `data-answered` is written by
+		// the server when it folds the reply in.
+		if (sender === 'ai' && !has_subsequent
+			&& display_content.indexOf('data-questions="') !== -1
+			&& display_content.indexOf('data-answered="1"') === -1) {
 			try {
 				let packed = display_content.match(/data-questions="([A-Za-z0-9+/=]*)"/);
 				if (packed && packed[1]) {
@@ -852,10 +861,20 @@ class ChatUIManager {
 		output = output
 			.replace(/&lt;span class="agent-question-data" data-questions="([A-Za-z0-9+/=]*)"&gt;&lt;\/span&gt;/g,
 				'<span class="agent-question-data" data-questions="$1"></span>')
+			// The settled fold carries `data-answered`, which is how the picker
+			// below tells an open question from a finished exchange. Matched
+			// before the plain one so the flag is not stripped off it.
+			.replace(/&lt;details class="agent-question" data-questions="([A-Za-z0-9+/=]*)" data-answered="1"&gt;/g,
+				'<details class="agent-question" data-questions="$1" data-answered="1">')
 			.replace(/&lt;details class="agent-question" data-questions="([A-Za-z0-9+/=]*)"&gt;/g,
 				'<details class="agent-question" data-questions="$1">')
 			.replace(/&lt;details class="agent-question"&gt;/g,
 				'<details class="agent-question">')
+			// WHAT THEY ANSWERED, inside the question that asked it. The class is
+			// what the renderer and the server both match on; the label inside it
+			// is translated and neither of them reads it.
+			.replace(/&lt;span class="agent-answer"&gt;/g, '<span class="agent-answer">')
+			.replace(/&lt;\/span&gt;/g, '</span>')
 			.replace(/&lt;\/details&gt;/g, '</details>')
 			.replace(/&lt;summary&gt;/g, '<summary>')
 			.replace(/&lt;\/summary&gt;/g, '</summary>');

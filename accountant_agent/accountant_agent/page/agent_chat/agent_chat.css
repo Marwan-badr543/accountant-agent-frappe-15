@@ -2016,3 +2016,26 @@
 	padding-bottom: 8px;
 	border-bottom: 1px solid var(--chat-border, #e5e7eb);
 }
+
+/* WHAT THEY ANSWERED, inside the question that asked it.
+ *
+ * The exchange is one block: the question is the handle, the reply is what is
+ * behind it. Set apart from the other questions in the fold, because it is
+ * the customer's own words and everything above it is the agent's. */
+.agent-answer {
+	display: block;
+	margin-top: 6px;
+	padding: 6px 10px;
+	border-radius: 6px;
+	background: var(--user-bubble, rgba(99, 102, 241, 0.10));
+	font-weight: 500;
+	word-break: break-word;
+}
+
+/* A settled exchange is quieter than one still waiting for an answer. Nothing
+ * is hidden — the accent simply stops asking for attention once it has been
+ * dealt with. */
+.agent-question[data-answered="1"] {
+	border-left-color: var(--chat-border, #e5e7eb);
+	background: transparent;
+}
