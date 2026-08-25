@@ -591,5 +591,6 @@ class ChatMessageHandler {
 
 		delete this.clarifications[session_id];
 		await this.send_chat_message(response_msg);
+		await this.chat.session_manager.load_chat_history();
 	}
 }

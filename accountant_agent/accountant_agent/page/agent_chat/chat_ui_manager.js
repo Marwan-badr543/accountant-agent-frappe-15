@@ -290,7 +290,24 @@ class ChatUIManager {
 					if (!has_subsequent) {
 						this.chat.show_clarification_popup(data.questions);
 					}
-					return Promise.resolve();
+					
+					let questions_list = data.questions || [];
+					let headline = questions_list.length > 0 ? questions_list[0].question : __('Clarification Question');
+					if (questions_list.length > 1) {
+						headline = `${headline} (${__('and')} ${questions_list.length - 1} ${__('more')})`;
+					}
+					
+					let body_parts = [];
+					if (questions_list.length > 1) {
+						questions_list.slice(1).forEach((q, idx) => {
+							body_parts.push(`${idx + 2}. ${q.question}`);
+						});
+					}
+					body_parts.push(`<span class="agent-answer">${__('Awaiting your answer...')}</span>`);
+					let body = body_parts.join('\n');
+
+					let packed_payload = btoa(unescape(encodeURIComponent(JSON.stringify(questions_list))));
+					display_content = `<details class="agent-question" data-questions="${packed_payload}"><summary>${headline}</summary>\n\n${body}\n</details>`;
 				}
 			} catch (e) {
 				console.error("Failed to parse clarification message JSON:", e);

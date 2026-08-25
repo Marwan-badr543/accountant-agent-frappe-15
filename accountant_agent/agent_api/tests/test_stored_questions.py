@@ -104,12 +104,10 @@ class StoredQuestionTests(unittest.TestCase):
 		self.assertNotIn("pick from the list below", stored)
 
 	def test_a_lone_unanswered_question_is_not_folded(self):
-		"""One line is already one line, and a fold that opens onto an empty box
-		is a control that does nothing. It becomes a fold the moment there is
-		an answer to put inside it — see `TheAnswerLivesInTheQuestionTests`."""
+		"""Lone unanswered questions are now collapsible from the start so they can be opened/closed."""
 		stored = _collapsible_question(CARD, ONE)
-		self.assertNotIn("<details", stored)
-		self.assertNotIn("<summary>", stored)
+		self.assertIn("<details", stored)
+		self.assertIn("<summary>", stored)
 
 	def test_the_question_is_never_clipped(self):
 		"""The same string is published LIVE, the moment the agent pauses. A
@@ -228,10 +226,9 @@ class TheAnswerLivesInTheQuestionTests(unittest.TestCase):
 	"""
 
 	def test_an_unanswered_question_is_a_plain_line(self):
-		"""A fold opening onto an empty box is a control that does nothing. It
-		stays a line until there is something to put inside it."""
+		"""An unanswered question is now collapsible from the start."""
 		stored = _collapsible_question(CARD, ONE)
-		self.assertNotIn("<details", stored)
+		self.assertIn("<details", stored)
 		self.assertIn("من هو العميل في هذه العملية؟", stored)
 
 	def test_the_answer_turns_it_into_something_you_can_open(self):

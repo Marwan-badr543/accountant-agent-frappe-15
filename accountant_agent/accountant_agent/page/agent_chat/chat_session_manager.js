@@ -233,6 +233,29 @@ class ChatSessionManager {
 			} else {
 				this.chat.ui_manager.render_welcome(this.chat.msg_box);
 			}
+
+			// Rebuild active stream bubble if session is currently streaming
+			if (this.chat.active_streams && this.chat.active_streams[this.session_id]) {
+				let stream = this.chat.active_streams[this.session_id];
+				this.chat.ui_manager.create_stream_bubble(this.chat.msg_box, stream.bubble_id, this.session_id);
+				
+				if (stream.steps.length > 0 || stream.status) {
+					this.chat.ui_manager.update_stream_status(this.chat.msg_box, stream.bubble_id, stream.status, stream.steps);
+				}
+				if (stream.reasoning) {
+					this.chat.ui_manager.update_stream_reasoning(this.chat.msg_box, stream.bubble_id, stream.reasoning);
+				}
+				if (stream.accumulated) {
+					this.chat.ui_manager.update_stream_bubble(this.chat.msg_box, stream.bubble_id, stream.accumulated);
+				}
+				this.chat.ui_manager.update_thinking_duration(this.chat.msg_box, stream.bubble_id, stream.elapsed_seconds);
+
+				let row = this.chat.msg_box.find(`#row-${stream.bubble_id}`);
+				row.find('.thinking-body-content').show();
+				row.find('.thinking-header-icon').css('transform', 'rotate(90deg)');
+
+				this.chat.message_handler.set_button_state('cancel');
+			}
 		} catch (e) {
 			console.error("Error loading chat history:", e);
 			this.chat.ui_manager.render_welcome(this.chat.msg_box);

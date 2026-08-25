@@ -1100,12 +1100,8 @@ def _collapsible_question(spoken: str, questions: list, answer: str = "") -> str
 			label=escape(_("You answered: {0}").format(said)),
 		)
 
-	if not body:
-		# NOTHING TO PUT INSIDE IT YET — the question has been asked and not yet
-		# answered. A `<details>` opening onto an empty box is a control that
-		# does nothing, so it stays a plain line until the answer arrives and
-		# `fold_the_answer_in` rewrites it.
-		return asked[0] + "\n\n" + _QUESTION_DATA.format(packed=packed)
+	else:
+		body = (body + "\n\n" if body else "") + _("Awaiting your answer...")
 
 	# The blank line after </summary> is load-bearing: without it a Markdown
 	# renderer treats the body as raw HTML and the content comes out as one
