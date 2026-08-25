@@ -8,8 +8,8 @@ import mimetypes
 import os
 import re
 import uuid
-from base64 import b64encode
-from html import escape
+from base64 import b64decode, b64encode
+from html import escape, unescape
 from typing import Optional
 
 import requests
@@ -335,6 +335,58 @@ _CARRIED_MARKUP = re.compile(
 	re.IGNORECASE,
 )
 
+#: The base64 question payload, wherever it rides — on the fold or on the
+#: legacy span. Both shapes carry the identical JSON.
+_QUESTION_PAYLOAD = re.compile(r'data-questions="([A-Za-z0-9+/=]+)"')
+
+
+def _questions_only(content: str) -> str:
+	"""The questions out of a stored question turn, and nothing else.
+
+	Returns "" when this turn is not a question, so the caller falls through to
+	the ordinary prose path.
+
+	WHY THIS READS THE PAYLOAD RATHER THAN THE PROSE
+		The stored turn is prose written for a person, and prose accretes. A
+		question the agent had to ask twice carries an apology in front of it —
+		*Sorry, I could not match "don't recodr , they are draft, just submit
+		them" to a record in your system* — and behind it the standing guidance
+		*tell me the name as it appears in your books*.
+
+		Stripping the tags left every one of those lines in the transcript that
+		is handed to the model. Four turns of it and the conversation reads as
+		an agent whose job is to ask for names, so the model asks for a name:
+		the live log shows the same question put three times to a customer who
+		had answered it in their first message. *"next nodes can not know whawt
+		the user say here"* is exactly that, and it is a signal-to-noise
+		problem rather than a plumbing one.
+
+		The payload is STRUCTURED. It holds the question text and nothing that
+		was wrapped around it, so reading it cannot pick up prose that has not
+		been written yet.
+
+	THE OPTIONS ARE DROPPED HERE TOO, and they are dropped on purpose. The
+	choice has been made by the time anybody reads this back; the roads not
+	taken sit between the question and the answer making the exchange harder to
+	read, and they spend a character budget that the turn carrying the amount
+	needs.
+	"""
+	match = _QUESTION_PAYLOAD.search(content or "")
+	if not match:
+		return ""
+	try:
+		questions = json.loads(b64decode(match.group(1)).decode("utf-8"))
+	except Exception:
+		return ""
+	if not isinstance(questions, list):
+		return ""
+	asked = [
+		str(q.get("question") or "").strip()
+		for q in questions
+		if isinstance(q, dict) and str(q.get("question") or "").strip()
+	]
+	return "\n".join(asked)
+
 
 def _prose_only(content: str) -> str:
 	"""One stored turn, as the sentence the person actually read.
@@ -342,7 +394,7 @@ def _prose_only(content: str) -> str:
 	THREE THINGS LIVE IN THIS COLUMN AND ONLY ONE OF THEM IS PROSE.
 		A plain reply is prose already. A pause is stored as the JSON envelope
 		the client needs in order to draw its card. A question carries a
-		base64 payload of its options in an invisible span, inside a fold.
+		base64 payload of its questions in an invisible span, or on a fold.
 
 	The agent is sent the transcript so it can remember what was agreed —
 	*"it should send to llm in chat history, so it can get the context and
@@ -351,10 +403,17 @@ def _prose_only(content: str) -> str:
 	base64 spends a per-turn character budget on nothing at all: the turn that
 	gets truncated to make room is the one where the customer said what the
 	entry was for.
+
+	A QUESTION TURN IS REDUCED TO THE QUESTION. See `_questions_only`.
 	"""
 	text = (content or "").strip()
 	if not text:
 		return ""
+
+	asked = _questions_only(text)
+	if asked:
+		return asked
+
 	if text.startswith("{"):
 		try:
 			payload = json.loads(text)
@@ -366,7 +425,13 @@ def _prose_only(content: str) -> str:
 				or payload.get("response") or ""
 			)
 			text = str(spoken).strip() or text
-	return _CARRIED_MARKUP.sub("", text).strip()
+	# AFTER THE JSON, NEVER BEFORE IT. The chat page stores what a person typed
+	# HTML-escaped, so `don't` is on disk as `don&#x27;t` and reached the model
+	# looking like markup. Unescaping earlier would be a different bug: a
+	# `&quot;` inside a stored envelope becomes a real quote and closes the JSON
+	# string early, so the parse above fails and the customer's turn is handed
+	# over raw.
+	return unescape(_CARRIED_MARKUP.sub("", text).strip())
 
 
 def post_message_to_agent(
@@ -915,67 +980,70 @@ def _readable_response(ai_response: str) -> tuple:
 
 
 def _collapsible_question(spoken: str, questions: list) -> str:
-	"""The question as it belongs in a transcript: one line, and the rest folded.
+	"""The question as it belongs in a transcript: the question, and nothing else.
 
-	THE REQUEST, IN THREE PARTS AND THEY ALL PULL THE SAME WAY
-		*"user qustions should stored in history wiht user reply, and it should
-		opened or close to save space of the chat window, so user can see all
-		what he did"*, then *"questions to the user should not saved to the chat
-		with its options, just save the question and the answer that the user
-		choosed"*, and then again: *"it should be collabsable so user can oben
-		or close to save chat window space in ui"*.
+	THE REQUEST, IN FOUR PARTS, AND THE FOURTH ONE WAS ANGRY
+		*"user qustions should stored in history wiht user reply"*, then
+		*"questions to the user should not saved to the chat with its options,
+		just save the question and the answer that the user choosed"*, then
+		*"it should be collabsable so user can oben or close to save chat window
+		space in ui"*, and then: *"i said before the question should saved with
+		just user answer, but you saved the question with all option so next
+		nodes can not know whawt the user say here, so its the third time i tell
+		you that"*.
 
-	SO EVERY STORED QUESTION IS A FOLD, WITH THE QUESTION ITSELF AS THE HANDLE
-		The summary is the question, in full and never truncated — it is read
-		live, the moment the agent pauses, and a customer must never be shown a
-		clipped question above an open answer picker. What folds away is
-		everything around it: the preamble, the "pick from the list below"
-		guidance, and the second and third questions when there are any.
+		The first three were implemented against `spoken`, which is the RENDERED
+		CARD — the question with everything the agent wrapped around it. So the
+		fold was right and its contents were not:
 
-		Closed by default. A conversation that recorded eight documents is
-		eight lines of question plus the customer's eight answers, instead of
-		eight cards.
+			Sorry — I could not match "don't recodr , they are draft, just
+			submit them" to a record in your system, so I do not want to guess.
+			Before I record this, let me check one thing with you.
+			Tell me the name as it appears in your books and I will carry on ...
 
-	THE OPTIONS ARE NOT STORED AS TEXT, AND NEVER WERE
-		They belong in the picker, where they are buttons. In the transcript
-		they are dead weight: the choice has been made, the answer is the
-		customer's own next message, and the roads not taken sit between the
-		two making the exchange harder to read.
+		Three lines of the agent's own scaffolding stored under every question,
+		and handed back to the model on the next turn. NOTHING IS BUILT FROM
+		`spoken` NOW. The questions are structured data and that is the only
+		thing this reads.
+
+	A SINGLE QUESTION IS NOT FOLDED, BECAUSE THERE IS NOTHING LEFT TO FOLD
+		One line is already one line. A `<details>` around it would open onto an
+		empty box, which is worse than no control at all. The fold appears when
+		it earns its place: two or more questions, one summary line, the rest
+		tucked away.
 
 	THE PICKER MUST STILL REOPEN AFTER A RELOAD
 		The transcript renderer reopens the answer picker when the last stored
 		message is a question the agent is still waiting on, and it finds the
 		questions by their `data-questions` attribute. So the structured
-		questions ride along on the block. Base64 rather than escaped JSON on
+		questions ride along either way — on the fold when there is one, and on
+		the invisible span when there is not. Base64 rather than escaped JSON on
 		purpose: the payload then contains no character that HTML, Markdown or
-		the no-Markdown fallback can react to, and Arabic question text
-		survives it intact.
+		the no-Markdown fallback can react to, and Arabic question text survives
+		it intact.
 	"""
 	if not spoken or not questions:
 		return spoken
 
-	first = questions[0] if isinstance(questions[0], dict) else {}
-	headline = str(first.get("question") or "").strip()
-	if not headline:
+	asked = [
+		str(question.get("question") or "").strip()
+		for question in questions
+		if isinstance(question, dict) and str(question.get("question") or "").strip()
+	]
+	if not asked:
 		return spoken
 
 	packed = b64encode(
 		json.dumps(questions, ensure_ascii=False).encode("utf-8")
 	).decode("ascii")
 
-	body = _without_the_headline(spoken, headline)
+	if len(asked) == 1:
+		return asked[0] + "\n\n" + _QUESTION_DATA.format(packed=packed)
 
-	# The rest of the questions, if there are any. Never anybody's options.
-	folded = [
-		f"{index}. {str(question.get('question') or '').strip()}"
-		for index, question in enumerate(questions[1:], 2)
-		if isinstance(question, dict) and str(question.get("question") or "").strip()
-	]
-	if folded:
-		body = (body + "\n\n" + "\n".join(folded)).strip()
-
-	if len(questions) > 1:
-		headline = _("{0} (and {1} more)").format(headline, len(questions) - 1)
+	headline = _("{0} (and {1} more)").format(asked[0], len(asked) - 1)
+	folded = "\n".join(
+		f"{index}. {question}" for index, question in enumerate(asked[1:], 2)
+	)
 
 	# The blank line after </summary> is load-bearing: without it a Markdown
 	# renderer treats the body as raw HTML and the content comes out as one
@@ -983,42 +1051,16 @@ def _collapsible_question(spoken: str, questions: list) -> str:
 	return (
 		f'<details class="agent-question" data-questions="{packed}">\n'
 		f"<summary>{escape(headline)}</summary>\n\n"
-		f"{body}\n"
+		f"{folded}\n"
 		"</details>"
 	)
 
 
-def _without_the_headline(spoken: str, headline: str) -> str:
-	"""The card, minus the one sentence that is now the summary.
-
-	The renderer emits the question on its own line, emphasised. Leaving it in
-	the body as well would show it twice the moment anybody opened the fold —
-	which is exactly the kind of small wrongness that makes a product feel
-	unfinished.
-
-	Compared with the emphasis and the surrounding whitespace stripped, so the
-	match does not depend on which renderer produced the line.
-	"""
-	wanted = headline.strip()
-	kept = [
-		line for line in (spoken or "").splitlines()
-		if line.strip().strip("*_ ").rstrip("?").rstrip() != wanted.strip("*_ ").rstrip("?").rstrip()
-	]
-	# Collapse the blank line the removal leaves behind.
-	body: list[str] = []
-	for line in kept:
-		if not line.strip() and (not body or not body[-1].strip()):
-			continue
-		body.append(line)
-	return "\n".join(body).strip()
-
-
-#: THE LEGACY CARRIER, kept only because transcripts written before questions
-#: became collapsible still contain it. Nothing produces it any more — every
-#: stored question is now a `<details class="agent-question">` — but the
-#: renderer must keep recognising it or a customer scrolling back through last
-#: week's conversation reads a raw HTML tag.
-_LEGACY_QUESTION_DATA = '<span class="agent-question-data" data-questions="{packed}"></span>'
+#: THE CARRIER FOR A QUESTION THAT IS NOT FOLDED. Invisible in the transcript,
+#: and the only thing that lets the answer picker reopen after a reload. It
+#: predates the fold and was very nearly deleted with it; a lone question has
+#: nothing to fold, so it is the right shape again rather than a legacy one.
+_QUESTION_DATA = '<span class="agent-question-data" data-questions="{packed}"></span>'
 
 
 def _answer_text(message: str) -> str:

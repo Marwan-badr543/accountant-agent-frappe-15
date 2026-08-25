@@ -89,34 +89,57 @@ class StoredQuestionTests(unittest.TestCase):
 		for option in ONE[0]["options"]:
 			self.assertNotIn(option, stored)
 
-	def test_every_question_folds_with_itself_as_the_handle(self):
-		"""*"it should be collabsable so user can oben or close to save chat
-		window space in ui"*, asked twice. A conversation that recorded eight
-		documents is eight lines of question, not eight cards."""
-		stored = _collapsible_question(CARD, ONE)
-		self.assertIn("<details", stored)
-		self.assertIn("<summary>", stored)
-		# Closed by default: that is what saves the space.
-		self.assertNotIn("<details open", stored)
+	def test_a_lone_question_is_stored_as_the_question_and_nothing_else(self):
+		"""*"i said before the question should saved with just user answer, but
+		you saved the question with all option so next nodes can not know whawt
+		the user say here, so its the third time i tell you that"*.
 
-	def test_the_question_is_never_clipped_in_the_summary(self):
+		The first three attempts folded the RENDERED CARD, so the preamble and
+		the closing guidance were stored under every question and handed back to
+		the model on the next turn. Nothing is built from the card now.
+		"""
+		stored = _collapsible_question(CARD, ONE)
+		self.assertIn("من هو العميل في هذه العملية؟", stored)
+		self.assertNotIn("Before I record this", stored)
+		self.assertNotIn("pick from the list below", stored)
+
+	def test_a_lone_question_is_not_folded_because_there_is_nothing_to_fold(self):
+		"""One line is already one line, and a fold that opens onto an empty box
+		is a control that does nothing."""
+		stored = _collapsible_question(CARD, ONE)
+		self.assertNotIn("<details", stored)
+		self.assertNotIn("<summary>", stored)
+
+	def test_the_question_is_never_clipped(self):
 		"""The same string is published LIVE, the moment the agent pauses. A
 		truncated question above an open answer picker is worse than no fold."""
 		stored = _collapsible_question(CARD, ONE)
+		self.assertNotIn("...", stored)
+
+	def test_several_questions_fold_with_the_first_as_the_handle(self):
+		"""The fold earns its place only when there is something behind it:
+		*"it should be collabsable so user can oben or close to save chat window
+		space in ui"*."""
+		stored = _collapsible_question(CARD, TWO)
+		self.assertIn("<details", stored)
+		# Closed by default: that is what saves the space.
+		self.assertNotIn("<details open", stored)
 		summary = stored.split("<summary>", 1)[1].split("</summary>", 1)[0]
 		self.assertIn("من هو العميل في هذه العملية؟", summary)
-		self.assertNotIn("...", summary)
-
-	def test_what_folds_away_is_everything_except_the_question(self):
-		stored = _collapsible_question(CARD, ONE)
 		body = stored.split("</summary>", 1)[1]
-		self.assertIn("Before I record this", body)
-		# ...and the question is not repeated inside the fold, which is what
-		# anybody opening it would see twice.
+		self.assertIn("How much was it?", body)
+		# The handle is not repeated inside the fold, which is what anybody
+		# opening it would otherwise read twice.
 		self.assertNotIn("من هو العميل في هذه العملية؟", body)
+		# And none of the card's scaffolding came with it.
+		self.assertNotIn("Before I record this", stored)
 
 	def test_a_reload_can_still_offer_the_answers(self):
+		"""Whether it folded or not. The picker finds its questions by the
+		`data-questions` attribute, and a lone question carries it on the
+		invisible span instead of on the fold."""
 		self.assertEqual(_payload(_collapsible_question(CARD, ONE)), ONE)
+		self.assertEqual(_payload(_collapsible_question(CARD, TWO)), TWO)
 
 	def test_several_questions_fold_but_still_show_none_of_the_options(self):
 		stored = _collapsible_question(TWO[0]["question"], TWO)
@@ -127,6 +150,15 @@ class StoredQuestionTests(unittest.TestCase):
 		for option in ONE[0]["options"]:
 			self.assertNotIn(option, stored)
 		self.assertEqual(_payload(stored), TWO)
+
+	def test_the_carrier_never_starts_a_paragraph_of_its_own(self):
+		"""It is `display: none`; a `<p>` wrapped around it is not, and an
+		empty paragraph under every question is exactly the wasted space this
+		work set out to remove. The blank line before it is what stops
+		Markdown giving the span its own block."""
+		stored = _collapsible_question(CARD, ONE)
+		self.assertTrue(stored.startswith(ONE[0]["question"]))
+		self.assertIn("\n\n<span", stored)
 
 	def test_a_question_with_no_wording_is_left_exactly_as_it_came(self):
 		self.assertEqual(_collapsible_question("just this", []), "just this")
@@ -228,3 +260,53 @@ class HistoryToTheModelTests(unittest.TestCase):
 	def test_an_empty_turn_yields_nothing_to_send(self):
 		self.assertEqual(_prose_only("   "), "")
 		self.assertEqual(_prose_only(None), "")
+
+	def test_the_model_is_sent_the_question_and_none_of_the_scaffolding(self):
+		"""THE BUG THIS PINS, FROM A REAL TRANSCRIPT.
+
+		The agent asked for an amount, could not match the reply, and asked
+		again — three times, of a customer who had said "submit those" and
+		meant it. Each stored turn carried its apology and its standing
+		guidance, so the history handed to the model read as an agent whose
+		job is to ask for names. It obliged.
+		"""
+		card = (
+			'Sorry — I could not match "don\'t recodr , they are draft, just '
+			"submit them\" to a record in your system, so I do not want to "
+			"guess at it.\n\n"
+			"Before I record this, let me check one thing with you.\n\n"
+			"**How much was it?**\n\n"
+			"Tell me the name as it appears in your books and I will carry on."
+		)
+		prose = _prose_only(_collapsible_question(card, TWO))
+		self.assertNotIn("Sorry", prose)
+		self.assertNotIn("Before I record this", prose)
+		self.assertNotIn("as it appears in your books", prose)
+		# Both questions survive, because both were asked.
+		self.assertIn("من هو العميل في هذه العملية؟", prose)
+		self.assertIn("How much was it?", prose)
+
+	def test_a_folded_question_reads_back_as_its_questions_not_its_summary(self):
+		"""The summary of a multi-question fold says "(and 1 more)", which is
+		chrome. The payload has both questions in full."""
+		prose = _prose_only(_collapsible_question(CARD, TWO))
+		self.assertNotIn("and 1 more", prose)
+		self.assertEqual(prose.splitlines(), [q["question"] for q in TWO])
+
+	def test_what_the_customer_typed_is_decoded_before_the_model_reads_it(self):
+		"""The chat page stores a typed reply HTML-escaped, so `don't` is on
+		disk as `don&#x27;t` and reached the model looking like markup."""
+		self.assertEqual(
+			_prose_only("don&#x27;t recodr , they are draft, just submit them"),
+			"don't recodr , they are draft, just submit them",
+		)
+
+	def test_an_envelope_is_parsed_before_its_entities_are_decoded(self):
+		"""The other order is a different bug: a `&quot;` inside a stored
+		envelope becomes a real quote, closes the JSON string early, and the
+		whole turn is handed over raw."""
+		stored = json.dumps({
+			"type": "plan", "plan": 'He said &quot;book it as cash&quot;.',
+			"status": "pending",
+		})
+		self.assertEqual(_prose_only(stored), 'He said "book it as cash".')
