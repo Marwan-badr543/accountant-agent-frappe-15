@@ -1162,6 +1162,16 @@
 	font-weight: 500;
 }
 
+/* These rows take focus now, so Enter can submit the one you chose. Focus you
+ * cannot see is worse than none: pressing Enter would send an answer from a
+ * row nobody could tell was selected. */
+.clarification-row-option:focus,
+.clarification-row-option:focus-visible {
+	outline: 2px solid var(--chat-primary);
+	outline-offset: 1px;
+	border-color: var(--chat-primary);
+}
+
 .option-num {
 	display: flex;
 	align-items: center;
@@ -1940,3 +1950,69 @@
 	}
 }
 
+
+/* ── A question the customer can fold away ──────────────────────────────────
+ *
+ * Stored questions keep the whole exchange in the transcript — *"so user can
+ * see all what he did"* — without a screen of space per question once they
+ * have been answered. The summary IS the first question, so a folded block
+ * still reads as one, and what folds away is the rest of the set. The options
+ * are never stored at all: *"just save the question and the answer that the
+ * user choosed"*.
+ */
+
+/* The invisible half of a stored question: the structured questions, packed
+ * into an attribute so a page reload can reopen the answer picker on a run
+ * that is still paused. It has no content and must never take a line. */
+.agent-question-data {
+	display: none;
+}
+
+.agent-question {
+	margin: 8px 0;
+	padding: 10px 12px;
+	border: 1px solid var(--chat-border, #e5e7eb);
+	border-left: 3px solid var(--chat-accent, #6366f1);
+	border-radius: 8px;
+	background: var(--ai-bubble, rgba(99, 102, 241, 0.04));
+}
+
+.agent-question > summary {
+	cursor: pointer;
+	font-weight: 600;
+	list-style: none;
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	line-height: 1.5;
+	/* The question can be long; it must wrap rather than clip. */
+	white-space: normal;
+	word-break: break-word;
+}
+
+.agent-question > summary::-webkit-details-marker {
+	display: none;
+}
+
+/* The affordance: a caret that turns when the block opens. Drawn in CSS so it
+ * needs no icon font and cannot fail to load. */
+.agent-question > summary::before {
+	content: "▸";
+	flex: 0 0 auto;
+	transition: transform 0.15s ease;
+	opacity: 0.6;
+}
+
+.agent-question[open] > summary::before {
+	transform: rotate(90deg);
+}
+
+.agent-question > summary:hover {
+	opacity: 0.85;
+}
+
+.agent-question[open] > summary {
+	margin-bottom: 8px;
+	padding-bottom: 8px;
+	border-bottom: 1px solid var(--chat-border, #e5e7eb);
+}

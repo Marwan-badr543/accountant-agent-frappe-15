@@ -242,6 +242,38 @@ class ChatUIManager {
 			attachments_html = parsed.attachments_html;
 		}
 
+		// A STORED QUESTION STILL OFFERS ITS ANSWERS AFTER A RELOAD.
+		//
+		// The picker used to be reopened by parsing the raw envelope out of
+		// the transcript — which only worked because the envelope was being
+		// stored, and being stored is what put `{"type": "clarification", ...`
+		// in a customer's chat window. The prose is stored now, with the
+		// questions packed into the block as base64, so both can be true: the
+		// exchange stays readable in the transcript AND the agent, which is
+		// still paused and waiting, still shows you what it is waiting for.
+		//
+		// Unlike the branch below this one, it does NOT return early: the
+		// folded question is a real message and gets drawn like one.
+		if (sender === 'ai' && !has_subsequent && display_content.indexOf('data-questions="') !== -1) {
+			try {
+				let packed = display_content.match(/data-questions="([A-Za-z0-9+/=]*)"/);
+				if (packed && packed[1]) {
+					// Base64 -> bytes -> UTF-8, so a question written in
+					// Arabic survives the round trip. `atob` alone would
+					// mangle every non-Latin character.
+					let bytes = Uint8Array.from(atob(packed[1]), c => c.charCodeAt(0));
+					let questions = JSON.parse(new TextDecoder('utf-8').decode(bytes));
+					if (Array.isArray(questions) && questions.length) {
+						this.chat.show_clarification_popup(questions);
+					}
+				}
+			} catch (e) {
+				// A question we cannot reopen is not a reason to lose the
+				// message: the customer can still read it and type an answer.
+				console.error("Could not reopen the stored question:", e);
+			}
+		}
+
 		if (sender === 'ai' && display_content.startsWith('{"type": "clarification"')) {
 			try {
 				let data = JSON.parse(content);
@@ -803,6 +835,30 @@ class ChatUIManager {
 			.replace(/&/g, "&amp;")
 			.replace(/</g, "&lt;")
 			.replace(/>/g, "&gt;");
+
+		// A FOLDED QUESTION MUST STILL FOLD WITH NO MARKDOWN LIBRARY.
+		//
+		// marked.js is fetched from a CDN, so this branch runs whenever that
+		// fetch failed — offline, blocked, or a slow first paint. Everything
+		// is escaped above, which is right for every tag except the two that
+		// carry a stored question: without this the customer reads a literal
+		// "<details>" in their chat instead of a heading they can open.
+		//
+		// Restored by exact match, so no attribute and no other tag can ride
+		// in with them. The span is the carrier for a question that had
+		// nothing to fold — invisible, and it must stay invisible here too:
+		// left escaped, the customer reads a tag where their question should
+		// be, which is the exact complaint this whole path exists to answer.
+		output = output
+			.replace(/&lt;span class="agent-question-data" data-questions="([A-Za-z0-9+/=]*)"&gt;&lt;\/span&gt;/g,
+				'<span class="agent-question-data" data-questions="$1"></span>')
+			.replace(/&lt;details class="agent-question" data-questions="([A-Za-z0-9+/=]*)"&gt;/g,
+				'<details class="agent-question" data-questions="$1">')
+			.replace(/&lt;details class="agent-question"&gt;/g,
+				'<details class="agent-question">')
+			.replace(/&lt;\/details&gt;/g, '</details>')
+			.replace(/&lt;summary&gt;/g, '<summary>')
+			.replace(/&lt;\/summary&gt;/g, '</summary>');
 
 		let lines = output.split('\n');
 		let in_table = false;

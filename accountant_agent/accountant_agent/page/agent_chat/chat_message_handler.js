@@ -341,8 +341,17 @@ class ChatMessageHandler {
 		if (q.options && q.options.length > 0) {
 			let rows = q.options.map((opt, idx) => {
 				let is_active = state.answers[q.id] === opt;
+				// `tabindex` IS WHAT MAKES ENTER WORK AT ALL.
+				//
+				// These are divs. A div with no tabindex cannot take focus, so
+				// clicking one left `document.body` focused — and a keydown on
+				// the body never passes through the picker, which is where the
+				// Enter handler is bound. Pressing Enter after choosing an
+				// option therefore did nothing whatsoever: *"when agent ask
+				// question enter button should submit it even if its options
+				// not custom reply"*.
 				return `
-					<div class="clarification-row-option ${is_active ? 'active' : ''}" data-value="${opt}">
+					<div class="clarification-row-option ${is_active ? 'active' : ''}" data-value="${opt}" tabindex="0" role="button">
 						<span class="option-num">${idx + 1}</span>
 						<span class="option-text">${opt}</span>
 					</div>
@@ -356,7 +365,7 @@ class ChatMessageHandler {
 			let is_custom_active = state.answers[q.id] && (!q.options || !q.options.includes(state.answers[q.id]));
 			let custom_val = is_custom_active ? state.answers[q.id] : '';
 			custom_input_html = `
-				<div class="clarification-row-option custom-option-row ${is_custom_active ? 'active' : ''}" style="flex-direction: column; align-items: stretch; gap: 8px;">
+				<div class="clarification-row-option custom-option-row ${is_custom_active ? 'active' : ''}" tabindex="0" role="button" style="flex-direction: column; align-items: stretch; gap: 8px;">
 					<div style="display: flex; align-items: center; gap: 10px;">
 						<span class="option-num">${(q.options || []).length + 1}</span>
 						<span class="option-text">${__('Other (write your answer)')}</span>
@@ -404,6 +413,13 @@ class ChatMessageHandler {
 		let state = this.clarifications[session_id];
 		if (!state) return;
 
+		// The container OUTLIVES the question drawn inside it. `.html()`
+		// discards handlers bound to the children it replaced, but not the
+		// ones bound to the container itself — so without this the Enter
+		// handler below is added again for every question, and answering the
+		// third question of a set would fire it three times.
+		this.chat.popup_container.off('keydown.clarification');
+
 		this.chat.popup_container.find('.btn-prev').on('click', (e) => {
 			e.preventDefault();
 			if (state.index > 0) {
@@ -427,6 +443,30 @@ class ChatMessageHandler {
 			self.chat.popup_container.find('.clarification-row-option').removeClass('active');
 			$(this).addClass('active');
 			self.chat.popup_container.find('.clarification-popup-custom-input').hide().val('');
+			// Focus follows the choice, so the next Enter is heard inside the
+			// picker rather than by the page.
+			$(this).focus();
+		});
+
+		// ENTER ON A CHOSEN OPTION SUBMITS IT.
+		//
+		// Reached two ways: someone who clicked an option (focus now sits on
+		// it, per the handler above) and someone who tabbed to one without
+		// ever clicking — for whom `state.answers` is still empty, so this
+		// records the choice as well as sending it.
+		//
+		// `stopPropagation` is not tidiness. Without it this bubbles to the
+		// container handler below, which calls `advance_or_submit` a second
+		// time, and one keystroke skips a question.
+		this.chat.popup_container.find('.clarification-row-option:not(.custom-option-row)').on('keydown', function(e) {
+			if (e.key !== 'Enter' || e.shiftKey) return;
+			e.preventDefault();
+			e.stopPropagation();
+
+			state.answers[q.id] = $(this).attr('data-value');
+			self.chat.popup_container.find('.clarification-row-option').removeClass('active');
+			$(this).addClass('active');
+			self.advance_or_submit(session_id);
 		});
 
 		this.chat.popup_container.find('.custom-option-row').on('click', function(e) {
@@ -438,9 +478,72 @@ class ChatMessageHandler {
 			input.show().focus();
 		});
 
+		// Enter on "Other" OPENS the box; it does not submit. There is nothing
+		// to send yet, and an empty answer is not nothing — the agent reads it
+		// as "I don't know" and decides the treatment on their behalf.
+		this.chat.popup_container.find('.custom-option-row').on('keydown', function(e) {
+			if (e.key !== 'Enter' || e.shiftKey) return;
+			if ($(e.target).hasClass('clarification-popup-custom-input')) return;
+			e.preventDefault();
+			e.stopPropagation();
+
+			self.chat.popup_container.find('.clarification-row-option').removeClass('active');
+			$(this).addClass('active');
+			$(this).find('.clarification-popup-custom-input').show().focus();
+		});
+
 		this.chat.popup_container.find('.clarification-popup-custom-input').on('input', function() {
 			let val = $(this).val().trim();
 			state.answers[q.id] = val;
+		});
+
+		// ENTER SUBMITS THE ANSWER.
+		//
+		// Typing an answer and pressing Enter is what everybody does, and it
+		// did nothing at all here: the answer sat in the box until the mouse
+		// found "Submit". Requested directly — *"when user get a qustion enter
+		// button should submit the answer"*.
+		//
+		// Shift+Enter is left alone so a multi-line answer is still possible,
+		// and the value is read straight off the field rather than trusting
+		// the `input` handler to have fired for the last keystroke.
+		this.chat.popup_container.find('.clarification-popup-custom-input').on('keydown', function(e) {
+			if (e.key !== 'Enter' || e.shiftKey) return;
+			e.preventDefault();
+			e.stopPropagation();
+
+			// Read straight off the field rather than trusting the `input`
+			// handler to have fired for the last keystroke.
+			let typed = $(this).val().trim();
+			// An empty box on Enter is a slip, not an answer — and an empty
+			// answer makes the agent decide the treatment for them. Skip is
+			// where deliberately saying nothing lives.
+			if (!typed) return;
+
+			state.answers[q.id] = typed;
+			self.advance_or_submit(session_id);
+		});
+
+		// And Enter anywhere else in the picker moves it on too — but ONLY
+		// once something has actually been chosen.
+		//
+		// An unguarded Enter submits an empty answer, and an empty answer is
+		// not nothing: the agent reads it as "I don't know" and decides the
+		// treatment on the customer's behalf. A stray keystroke must not pick
+		// how a sale is posted. Skipping deliberately is still available, on
+		// the Skip button, where it is a decision rather than an accident.
+		this.chat.popup_container.on('keydown.clarification', function(e) {
+			if (e.key !== 'Enter' || e.shiftKey) return;
+			if ($(e.target).hasClass('clarification-popup-custom-input')) return;
+			e.preventDefault();
+
+			// The buttons handle their own Enter; letting this run as well
+			// would advance two questions on one keystroke.
+			if ($(e.target).is('button')) return;
+
+			let chosen = (state.answers[q.id] || '').trim();
+			if (!chosen) return;
+			self.advance_or_submit(session_id);
 		});
 
 		this.chat.popup_container.find('.btn-skip').on('click', (e) => {
@@ -480,9 +583,12 @@ class ChatMessageHandler {
 		let response_msg = `Clarification Response:\n${response_parts.join('\n')}`;
 		
 		if (this.chat.session_manager.session_id === session_id) {
-			this.chat.popup_container.hide().empty();
+			// `.off` as well as `.empty`: the Enter handler is bound to the
+			// container, which survives emptying it, and a live one over a
+			// closed picker submits the previous question's answers again.
+			this.chat.popup_container.off('keydown.clarification').hide().empty();
 		}
-		
+
 		delete this.clarifications[session_id];
 		await this.send_chat_message(response_msg);
 	}

@@ -7,6 +7,8 @@ import json
 import mimetypes
 import os
 import uuid
+from base64 import b64encode
+from html import escape
 from typing import Optional
 
 import requests
@@ -530,8 +532,25 @@ def send_message(message, session_id, agent_email, agent_type="auto", file_urls=
 		except Exception as e:
 			frappe.log_error(f"Error updating plan status JSON: {str(e)}", "Accountant Agent Plan Status Update")
 
-	# Save user message to client DB if not "Approve" and not a clarification response
-	if message != "Approve" and not message.startswith("Clarification Response:"):
+	# THE CUSTOMER'S OWN WORDS ALWAYS GO INTO THEIR TRANSCRIPT.
+	#
+	# An answer to a question used to be dropped entirely: the question was
+	# shown, the customer answered it, and their reply appeared nowhere. From
+	# their side the exchange had been deleted — *"it also deleted, so user
+	# qustions should stored in history wiht user reply"* — and the agent's own
+	# history readers could not see what had been agreed either.
+	#
+	# What is stored is the ANSWER, not the envelope: the reply arrives with the
+	# agent's full question wrapped around it, and echoing that back at the
+	# customer at full length is why it was being skipped in the first place.
+	if message == "Approve":
+		pass
+	elif message.startswith("Clarification Response:"):
+		said = _answer_text(message)
+		if said:
+			save_chat_history(session_id, "human", said)
+			update_chat_timestamp(session_id)
+	else:
 		save_chat_history(session_id, "human", message)
 		update_chat_timestamp(session_id)
 
@@ -735,12 +754,30 @@ def process_agent_message_background(
 					)
 				elif current_event == "done":
 					ai_response = data_json.get("response", "")
-					save_chat_history(session_id, "ai", ai_response)
+
+					# WHAT THE AGENT PAUSED FOR, AND WHAT THE PERSON READS, ARE
+					# NOT THE SAME STRING.
+					#
+					# A paused run answers with a JSON envelope, because the
+					# client needs the questions and their options as data. That
+					# envelope was being saved to the transcript and published as
+					# the assistant's message verbatim, so an accountant asking
+					# about a laptop sale got a chat bubble opening
+					# `{"type": "clarification", "questions": [{"id": ...` and
+					# containing the question twice inside it.
+					#
+					# The envelope carries its own rendered prose. Show that,
+					# store that, and keep the structured half for the picker.
+					spoken, questions = _readable_response(ai_response)
+					if questions:
+						spoken = _collapsible_question(spoken, questions)
+
+					save_chat_history(session_id, "ai", spoken)
 					update_chat_timestamp(session_id)
 
 					frappe.publish_realtime(
 						event="agent_message_done",
-						message={"session_id": session_id, "response": ai_response},
+						message={"session_id": session_id, "response": spoken},
 						user=user,
 					)
 
@@ -749,7 +786,6 @@ def process_agent_message_background(
 					# noticing the payload type. The agent is waiting on a
 					# person; the options it offered should be in front of them
 					# straight away.
-					questions = _clarification_questions(ai_response)
 					if questions:
 						frappe.publish_realtime(
 							event="agent_clarification_requested",
@@ -777,24 +813,186 @@ def process_agent_message_background(
 				pass
 
 
-def _clarification_questions(ai_response: str) -> list:
-	"""The questions an agent is waiting on, or an empty list.
+def _readable_response(ai_response: str) -> tuple:
+	"""Split an agent reply into what a person reads and what a picker needs.
 
-	An agent pauses either to have something approved or to ask something. Only
-	the second should open the answer picker, and the payload says which it is.
-	Anything unparseable is treated as "not a question", because showing a
-	spurious popup over a finished report is worse than showing none.
+	Returns (the prose to show and store, the questions to open a picker for).
+
+	WHY THIS EXISTS
+		An agent that pauses answers with a JSON envelope — the client needs
+		the questions and their options as structured data, and there is no
+		way around that. But the envelope was going straight into the chat
+		transcript as the assistant's message, so the customer saw:
+
+			{"type": "clarification", "questions": [{"id": "essentials", ...
+
+		...with the question text buried inside it, twice. `project_rules.md`
+		§6 forbids exactly this, and it was landing on the one screen the
+		product is judged by.
+
+		Every envelope already carries its own rendered prose, written by the
+		agent for this purpose. This returns that, and hands the structured
+		half to the picker instead of to the renderer.
+
+	ANYTHING UNRECOGNISED IS RETURNED UNTOUCHED. A normal reply is not
+	JSON, and a future envelope shape this does not know about must still
+	reach the customer rather than being swallowed by a parser.
 	"""
 	if not ai_response or not ai_response.lstrip().startswith("{"):
-		return []
+		return ai_response, []
 	try:
 		payload = json.loads(ai_response)
 	except (ValueError, TypeError):
-		return []
-	if not isinstance(payload, dict) or payload.get("type") != "clarification":
-		return []
+		return ai_response, []
+	if not isinstance(payload, dict):
+		return ai_response, []
+
+	if payload.get("type") != "clarification":
+		# A PLAN ENVELOPE IS STORED VERBATIM, AND MUST BE.
+		#
+		# `get_latest_plan_message` finds a pending approval by looking for a
+		# stored message whose content literally starts with `{"type": "plan"`,
+		# and `handle_agent_message` then rewrites its `status` field from
+		# "pending" to "approved" or "refused". Replacing that message with its
+		# own prose makes the plan unfindable, so the status never moves — and
+		# the failure is silent, because the caller swallows the parse error.
+		#
+		# The chat window renders a plan as a card from the same JSON. Only the
+		# clarification envelope was ever shown to a customer raw, and only it
+		# is rewritten here.
+		return ai_response, []
+
 	questions = payload.get("questions")
-	return questions if isinstance(questions, list) else []
+	spoken = payload.get("question") or ""
+	return (spoken or ai_response), (questions if isinstance(questions, list) else [])
+
+
+def _collapsible_question(spoken: str, questions: list) -> str:
+	"""The question as it belongs in a transcript: the question, and nothing else.
+
+	THE REQUEST, IN TWO PARTS AND THEY PULL THE SAME WAY
+		*"user qustions should stored in history wiht user reply, and it should
+		opened or close to save space of the chat window, so user can see all
+		what he did"*, and then: *"questions to the user should not saved to the
+		chat with its options, just save the question and the answer that the
+		user choosed"*.
+
+		The options belong in the picker, where they are buttons. In the
+		transcript they are dead weight: the choice has already been made, the
+		answer is stored as the customer's own next message, and a list of the
+		roads not taken sits between the two making the exchange harder to read
+		rather than easier.
+
+	SO THERE ARE TWO SHAPES, AND WHICH ONE IS USED IS DECIDED BY WHETHER THERE
+	IS ANYTHING LEFT TO FOLD
+		One question is one sentence. A widget around it saves no space and
+		hides nothing, so it is stored as prose.
+
+		Several questions asked at once are worth folding, and what folds away
+		is the second and third question — never the first, which stays visible
+		as the summary so a folded block still reads as a question.
+
+	THE PICKER MUST STILL REOPEN AFTER A RELOAD
+		The transcript renderer reopens the answer picker when the last stored
+		message is a question the agent is still waiting on, and it finds the
+		questions by their `data-questions` attribute. Storing readable prose
+		and nothing else would quietly cost the customer that picker on every
+		page reload, with the run still paused behind it.
+
+		So the structured questions ride along in the block either way — in an
+		empty span when there is nothing to fold. Base64 rather than escaped
+		JSON on purpose: the payload then contains no character that HTML,
+		Markdown or the no-Markdown fallback can react to, and Arabic question
+		text survives it intact.
+	"""
+	if not spoken or not questions:
+		return spoken
+
+	first = questions[0] if isinstance(questions[0], dict) else {}
+	headline = str(first.get("question") or "").strip()
+	if not headline:
+		return spoken
+
+	packed = b64encode(
+		json.dumps(questions, ensure_ascii=False).encode("utf-8")
+	).decode("ascii")
+
+	# The rest of the questions, if there are any. Never the first — it is the
+	# summary — and never anybody's options.
+	folded = [
+		f"{index}. {str(question.get('question') or '').strip()}"
+		for index, question in enumerate(questions[1:], 2)
+		if isinstance(question, dict) and str(question.get("question") or "").strip()
+	]
+
+	if not folded:
+		# NOTHING TO FOLD. The question is the message; the span is invisible
+		# and exists only so a reload can still offer the answers.
+		#
+		# JOINED WITH NOTHING BETWEEN THEM, AND THAT IS NOT A STYLE CHOICE. A
+		# blank line is a paragraph break to every Markdown renderer, so
+		# `question\n\nspan` comes out as TWO paragraphs — and while the span
+		# is `display: none`, the `<p>` wrapped around it is not. Every stored
+		# question would carry an empty paragraph's worth of dead space
+		# underneath it, in the transcript of the person who asked for the
+		# chat window to stop wasting space.
+		return f'{spoken.rstrip()}{_QUESTION_DATA.format(packed=packed)}'
+
+	headline = _("{0} (and {1} more)").format(headline, len(questions) - 1)
+
+	# The blank line after </summary> is load-bearing: without it a Markdown
+	# renderer treats the body as raw HTML and the questions come out as one
+	# unformatted run-on line.
+	return (
+		f'<details class="agent-question" data-questions="{packed}">\n'
+		f"<summary>{escape(headline)}</summary>\n\n"
+		+ "\n".join(folded) + "\n"
+		"</details>"
+	)
+
+
+#: The invisible carrier for a question with nothing to fold. Written exactly
+#: like this, and matched exactly like this in the renderer's no-Markdown
+#: fallback — an attribute out of place there means a customer reads the tag.
+_QUESTION_DATA = '<span class="agent-question-data" data-questions="{packed}"></span>'
+
+
+def _answer_text(message: str) -> str:
+	"""What the customer actually answered, out of the envelope around it.
+
+	A reply to a question arrives as the agent's own question with the answer
+	appended to it:
+
+		Clarification Response:
+		* **Got it, we can record the laptop sale as revenue. Two ways ...**: sale invoice
+
+	That whole blob was never stored, so the transcript showed a question and
+	then nothing — the customer's own words disappeared from their chat, and
+	so did the fact that they had answered at all. Storing the blob verbatim
+	would be worse: it repeats the question back at them at full length.
+
+	Returns "" when there is no answer to show, and the caller stores nothing.
+	"""
+	answers = []
+	for line in (message or "").splitlines():
+		line = line.strip()
+		if not line.startswith("*"):
+			continue
+		# "* **<question>**: <answer>" — the answer is after the last "**:".
+		marker = "**:"
+		if marker in line:
+			said = line.rsplit(marker, 1)[1].strip()
+		else:
+			said = line.lstrip("*").strip()
+		if said:
+			answers.append(said)
+
+	if not answers:
+		return ""
+	return "\n".join(answers)
+
+
+
 
 
 @frappe.whitelist()
