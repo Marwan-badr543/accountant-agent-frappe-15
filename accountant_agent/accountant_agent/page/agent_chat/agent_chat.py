@@ -1101,7 +1101,7 @@ def _collapsible_question(spoken: str, questions: list, answer: str = "") -> str
 		)
 
 	else:
-		body = (body + "\n\n" if body else "") + _("Awaiting your answer...")
+		body = (body + "\n\n" if body else "") + _("Awaiting your answer")
 
 	# The blank line after </summary> is load-bearing: without it a Markdown
 	# renderer treats the body as raw HTML and the content comes out as one

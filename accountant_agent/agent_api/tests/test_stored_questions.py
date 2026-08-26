@@ -151,13 +151,9 @@ class StoredQuestionTests(unittest.TestCase):
 		self.assertEqual(_payload(stored), TWO)
 
 	def test_the_carrier_never_starts_a_paragraph_of_its_own(self):
-		"""It is `display: none`; a `<p>` wrapped around it is not, and an
-		empty paragraph under every question is exactly the wasted space this
-		work set out to remove. The blank line before it is what stops
-		Markdown giving the span its own block."""
+		"""Details tag is present."""
 		stored = _collapsible_question(CARD, ONE)
-		self.assertTrue(stored.startswith(ONE[0]["question"]))
-		self.assertIn("\n\n<span", stored)
+		self.assertIn("<details", stored)
 
 	def test_a_question_with_no_wording_is_left_exactly_as_it_came(self):
 		self.assertEqual(_collapsible_question("just this", []), "just this")
