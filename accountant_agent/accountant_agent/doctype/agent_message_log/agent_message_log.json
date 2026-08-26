@@ -1,0 +1,67 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-08-26 00:00:00.000000",
+ "description": "An append-only record of every message the Accountant Agent tried to send, including the ones that were refused. A message cannot be unsent, so 'no error was raised' is not evidence it went - the provider's own message id, recorded here, is. The unique idempotency key is what stops a retried request sending the same email twice.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "identity_section", "idempotency_key", "channel", "status",
+  "column_break_aml1", "destination", "destination_label", "sent_at",
+  "content_section", "subject", "body_preview", "column_break_aml2", "attachment_names",
+  "actor_section", "requested_by", "approved_by", "column_break_aml3", "run_id", "session_id",
+  "receipt_section", "provider_message_id", "column_break_aml4", "error_code", "error_message"
+ ],
+ "fields": [
+  {"fieldname": "identity_section", "fieldtype": "Section Break", "label": "Message"},
+  {"fieldname": "idempotency_key", "fieldtype": "Data", "label": "Idempotency Key", "reqd": 1, "unique": 1, "read_only": 1,
+   "description": "Unique per intended message. A retry carrying the same key returns the original receipt instead of sending again."},
+  {"fieldname": "channel", "fieldtype": "Select", "label": "Channel", "options": "gmail\ntelegram", "reqd": 1, "read_only": 1, "in_list_view": 1, "in_standard_filter": 1},
+  {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "SENT\nREFUSED\nFAILED", "reqd": 1, "read_only": 1, "in_list_view": 1, "in_standard_filter": 1,
+   "description": "SENT means the provider accepted it and gave us an id. REFUSED means this site would not send it. FAILED means the provider rejected it."},
+  {"fieldname": "column_break_aml1", "fieldtype": "Column Break"},
+  {"fieldname": "destination", "fieldtype": "Data", "label": "Destination", "read_only": 1, "in_list_view": 1,
+   "description": "The email address, or the Telegram chat id."},
+  {"fieldname": "destination_label", "fieldtype": "Data", "label": "Destination Name", "read_only": 1,
+   "description": "For Telegram, the name the destination was listed under."},
+  {"fieldname": "sent_at", "fieldtype": "Datetime", "label": "Sent At", "read_only": 1},
+
+  {"fieldname": "content_section", "fieldtype": "Section Break", "label": "Content"},
+  {"fieldname": "subject", "fieldtype": "Data", "label": "Subject", "read_only": 1},
+  {"fieldname": "body_preview", "fieldtype": "Small Text", "label": "Body (first 500 characters)", "read_only": 1,
+   "description": "Truncated on purpose. This log is for proving what was sent to whom, not for storing a second copy of the customer's correspondence."},
+  {"fieldname": "column_break_aml2", "fieldtype": "Column Break"},
+  {"fieldname": "attachment_names", "fieldtype": "Small Text", "label": "Attachments", "read_only": 1},
+
+  {"fieldname": "actor_section", "fieldtype": "Section Break", "label": "Who"},
+  {"fieldname": "requested_by", "fieldtype": "Data", "label": "Requested By", "read_only": 1},
+  {"fieldname": "approved_by", "fieldtype": "Data", "label": "Approved By", "read_only": 1,
+   "description": "The person who agreed to this being sent. Empty where the request itself named the destination, which is its own approval."},
+  {"fieldname": "column_break_aml3", "fieldtype": "Column Break"},
+  {"fieldname": "run_id", "fieldtype": "Data", "label": "Run", "read_only": 1},
+  {"fieldname": "session_id", "fieldtype": "Data", "label": "Chat Session", "read_only": 1},
+
+  {"fieldname": "receipt_section", "fieldtype": "Section Break", "label": "Receipt"},
+  {"fieldname": "provider_message_id", "fieldtype": "Data", "label": "Provider Message ID", "read_only": 1,
+   "description": "Gmail's message id, or Telegram's. This is the only proof the message was actually accepted."},
+  {"fieldname": "column_break_aml4", "fieldtype": "Column Break"},
+  {"fieldname": "error_code", "fieldtype": "Data", "label": "Error Code", "read_only": 1},
+  {"fieldname": "error_message", "fieldtype": "Small Text", "label": "Error", "read_only": 1}
+ ],
+ "in_create": 1,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-26 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Accountant Agent",
+ "name": "Agent Message Log",
+ "owner": "Administrator",
+ "permissions": [
+  {"email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1}
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

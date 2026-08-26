@@ -1,0 +1,33 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-08-26 00:00:00.000000",
+ "description": "One place the agent may send a Telegram message. A Telegram bot cannot start a conversation, so every destination here is a chat that already exists: a group or channel the bot has been added to, or a person who has pressed Start on it.",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": ["label", "chat_id", "column_break_atd1", "is_default", "notes"],
+ "fields": [
+  {"columns": 2, "fieldname": "label", "fieldtype": "Data", "in_list_view": 1, "label": "Name", "reqd": 1,
+   "description": "What the accountant will call this when asking the agent to send something - for example 'Finance Team'."},
+  {"columns": 2, "fieldname": "chat_id", "fieldtype": "Data", "in_list_view": 1, "label": "Chat ID", "reqd": 1,
+   "description": "The numeric chat id Telegram gives you. Group ids are negative. See the setup guide for how to find it - it is not a phone number and cannot be guessed."},
+  {"fieldname": "column_break_atd1", "fieldtype": "Column Break"},
+  {"columns": 1, "default": "0", "fieldname": "is_default", "fieldtype": "Check", "in_list_view": 1, "label": "Default",
+   "description": "Where a Telegram message goes when the accountant does not name a destination."},
+  {"columns": 3, "fieldname": "notes", "fieldtype": "Data", "in_list_view": 1, "label": "Notes"}
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-26 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Accountant Agent",
+ "name": "Agent Telegram Destination",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
