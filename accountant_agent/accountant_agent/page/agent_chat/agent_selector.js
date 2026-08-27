@@ -91,7 +91,7 @@ class AgentSelector {
 				name: __('Reconciliation Agent'),
 				icon: 'fa-balance-scale',
 				badge_class: 'agent-type-reconcile',
-				description: __('Match two or more sources and explain every difference. Max 8 files (20 MB total, Excel up to 40 MB).'),
+				description: __('Compare two sets of records and explain every difference. Spreadsheets only \u2014 up to 8 files, 40 MB total.'),
 				// A reconciliation compares N sources, so it needs more headroom
 				// than the single-source agents: a 3-way match with supporting
 				// schedules is already 4-5 files before any opening balance.
@@ -101,7 +101,21 @@ class AgentSelector {
 					max_per_file_mb: 40,
 					max_non_excel_total_mb: 20,
 					max_excel_total_mb: 40,
-					is_aggregate: true
+					is_aggregate: true,
+					// Uploads are spreadsheets only: a reconciliation compares two
+					// tables, and a PDF is not one. Refusing it here means the
+					// customer is told before a 40 MB upload rather than after.
+					//
+					// This restricts what can be UPLOADED, not what can be
+					// reconciled against. The desk still reads the accounting
+					// system through its own tools, so a spreadsheet against the
+					// ERP - or the ERP against itself - is unaffected.
+					//
+					// MUST stay in step with allowed_extensions in
+					// RECONCILE_SETTINGS (agent/agent_services/reconcile_service/
+					// reconcile.py), which is the check that actually protects the
+					// server.
+					allowed_extensions: ['.xlsx', '.xls', '.ods']
 				}
 			},
 			create: {

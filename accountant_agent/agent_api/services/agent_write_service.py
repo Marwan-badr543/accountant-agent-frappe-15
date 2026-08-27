@@ -134,6 +134,11 @@ MAX_SEARCH_DOCTYPES: int = 6
 
 VALID_ACTIONS: frozenset[str] = frozenset({"create", "submit", "cancel", "amend"})
 
+#: A field value of "@0" in a batch means "the name of the document item 0
+#: produced". The agent sends the whole piece of work in one request, so this
+#: loop is the only place that knows that name before the next item runs.
+_BACK_REFERENCE = re.compile(r"^@(\d+)$")
+
 #: DocTypes whose validate() has been read and confirmed free of non-transactional
 #: side effects (no enqueue, no sendmail, no publish_realtime), so a savepoint
 #: rollback genuinely undoes everything the dry run touched. Verified against
@@ -2146,19 +2151,30 @@ def _mutate_existing(
         raise WriteRejectedError(_user_message(code, str(exc)), code=code)
 
 
-def create_documents_batch(
+def write_documents_batch(
     documents: Sequence[dict],
     run_id: Optional[str] = None,
     session_id: Optional[str] = None,
     approved_by: Optional[str] = None,
 ) -> dict:
-    """Create many documents in one transaction, one savepoint each.
+    """Every action of one request, in one transaction, in the order given.
 
-    Atomicity policy, and the two halves are deliberately different questions:
-      * WITHIN a document - all or nothing, always. A half-written journal entry
-        is a corrupt ledger.
-      * ACROSS documents - continue on error. A batch of 400 invoices that
-        aborts on row 397 and discards 396 good ones is an unusable product.
+    ONE REQUEST FOR THE WHOLE PIECE OF WORK. The agent decides what to do and
+    sends the list; this loops. A creation, a submission and a reversal may sit
+    side by side in it, because "cancel that one and post a corrected version"
+    is one thing a person asked for, not three.
+
+    Atomicity, and the halves are different questions on purpose:
+      * WITHIN a document - all or nothing, always. A half-written entry is a
+        corrupt ledger.
+      * ACROSS documents - continue, EXCEPT for the documents that depended on
+        the one that failed. An import of 400 invoices must not be discarded
+        over row 397; an invoice for an item that was never created must not
+        be attempted at all.
+
+    BACK-REFERENCES ARE RESOLVED HERE. A field value of "@0" means "the name of
+    the document item 0 produced", and this loop is the only place that knows
+    that name before the next item runs.
     """
     if not documents:
         raise MissingParameterError(_("No documents supplied."))
@@ -2171,10 +2187,10 @@ def create_documents_batch(
     assert_write_policy_enabled(policy)
     assert_not_dry_run(policy)
 
-    # ONE query for the whole batch, before a single row is written. Checking
-    # per document would be 400 aggregate queries on a 400-row import, and it
-    # would also let a batch that breaches the ceiling write everything up to
-    # the row that crosses it - a half-applied import nobody asked for.
+    # ONE query for the whole request, before a single row is written. Per
+    # document it would be 400 aggregate queries on a 400-row import, and it
+    # would let a request that breaches the ceiling write everything up to the
+    # document that crosses it - a half-applied import nobody asked for.
     assert_run_caps_for_run(
         policy,
         run_id,
@@ -2183,46 +2199,186 @@ def create_documents_batch(
     )
 
     results: list[dict] = []
-    created = replayed = rejected = 0
+    names: dict[int, str] = {}      # index -> the document it produced
+    failed: set[int] = set()
 
     for ordinal, entry in enumerate(documents, start=1):
-        payload = entry.get("payload") or {}
+        index = ordinal - 1
+        action = str(entry.get("action") or "create").lower()
         key = entry.get("idempotency_key") or ""
+        payload = entry.get("payload") or {}
+
+        if action not in VALID_ACTIONS:
+            results.append(_batch_refusal(
+                entry, ordinal, "INVALID_ACTION",
+                _("{0} is not something I can do to a document.").format(action),
+            ))
+            failed.add(index)
+            continue
+
+        # WHAT THIS ONE WAS BUILT OUT OF. A document that names a document
+        # that failed is not attempted: it would be written against a
+        # reference that does not exist, and the ERP's refusal would name a
+        # field rather than the real reason.
+        # THE NAME COUNTS, not only the payload. "Record this and post it" is a
+        # creation followed by a submission of "@0", and that reference lives
+        # in the document's NAME rather than in its fields. Resolving only the
+        # payload sent "@0" on to the ERP as a document number, which it quite
+        # correctly said it had never heard of - and the customer was told
+        # their entry number 0 did not exist.
+        referenced = {"docname": entry.get("docname"), "payload": payload}
+        missing = sorted(_unresolved_references(referenced, names))
+        if missing:
+            results.append(_batch_skip(entry, ordinal, missing))
+            failed.add(index)
+            continue
+
+        referenced = _with_references_resolved(referenced, names)
+        entry = {**entry, "docname": referenced["docname"]}
+        payload = referenced["payload"]
+
         try:
-            outcome = create_document(
+            outcome = _run_one_write(
+                action=action,
+                entry=entry,
                 payload=payload,
-                idempotency_key=key,
+                key=key,
                 run_id=run_id,
                 session_id=session_id,
                 approved_by=approved_by,
                 savepoint_ordinal=ordinal,
-                enforce_run_caps=False,
             )
-            outcome["ordinal"] = ordinal
-            outcome["source_row_ordinal"] = entry.get("source_row_ordinal")
-            results.append(outcome)
-            if outcome["outcome"] == "CREATED":
-                created += 1
-            else:
-                replayed += 1
         except AgentWriteError as exc:
-            rejected += 1
-            results.append(
-                {
-                    "outcome": "REJECTED",
-                    "ordinal": ordinal,
-                    "source_row_ordinal": entry.get("source_row_ordinal"),
-                    "doctype": payload.get("doctype"),
-                    "idempotency_key": key,
-                    "error_code": exc.code,
-                    "error_message": exc.message,
-                }
-            )
+            failed.add(index)
+            results.append(_batch_refusal(entry, ordinal, exc.code, exc.message))
+            continue
+
+        outcome["ordinal"] = ordinal
+        outcome["source_row_ordinal"] = entry.get("source_row_ordinal")
+        if outcome.get("docname"):
+            names[index] = outcome["docname"]
+        results.append(outcome)
 
     return {
-        "created": created,
-        "replayed": replayed,
-        "rejected": rejected,
+        "written": sum(1 for r in results if r["outcome"] not in ("REJECTED", "SKIPPED")),
+        "rejected": sum(1 for r in results if r["outcome"] == "REJECTED"),
+        "skipped": sum(1 for r in results if r["outcome"] == "SKIPPED"),
+        "results": results,
+    }
+
+
+def _run_one_write(
+    action: str,
+    entry: dict,
+    payload: dict,
+    key: str,
+    run_id: Optional[str],
+    session_id: Optional[str],
+    approved_by: Optional[str],
+    savepoint_ordinal: int,
+) -> dict:
+    """Dispatch one entry of a batch to the action it asked for."""
+    common = {
+        "idempotency_key": key,
+        "run_id": run_id,
+        "session_id": session_id,
+        "approved_by": approved_by,
+        "savepoint_ordinal": savepoint_ordinal,
+    }
+    if action == "create":
+        return create_document(payload=payload, enforce_run_caps=False, **common)
+
+    doctype = entry.get("doctype") or payload.get("doctype")
+    docname = entry.get("docname")
+    if action == "submit":
+        return submit_existing_document(doctype=doctype, docname=docname, **common)
+    if action == "cancel":
+        return cancel_existing_document(
+            doctype=doctype, docname=docname, reason=entry.get("reason") or "", **common
+        )
+    return amend_existing_document(
+        doctype=doctype, docname=docname, payload=payload, **common
+    )
+
+
+def _batch_refusal(entry: dict, ordinal: int, code: str, message: str) -> dict:
+    return {
+        "outcome": "REJECTED",
+        "ordinal": ordinal,
+        "source_row_ordinal": entry.get("source_row_ordinal"),
+        "doctype": entry.get("doctype") or (entry.get("payload") or {}).get("doctype"),
+        "docname": entry.get("docname"),
+        "idempotency_key": entry.get("idempotency_key") or "",
+        "error_code": code,
+        "error_message": message,
+    }
+
+
+def _batch_skip(entry: dict, ordinal: int, missing: Sequence[int]) -> dict:
+    """Not attempted, and the reason names the document it was waiting for."""
+    needed = ", ".join(f"#{index + 1}" for index in missing)
+    return {
+        "outcome": "SKIPPED",
+        "ordinal": ordinal,
+        "source_row_ordinal": entry.get("source_row_ordinal"),
+        "doctype": entry.get("doctype") or (entry.get("payload") or {}).get("doctype"),
+        "docname": None,
+        "idempotency_key": entry.get("idempotency_key") or "",
+        "error_code": "DEPENDENCY_FAILED",
+        "error_message": _(
+            "Not attempted: it was built from document {0}, which was not recorded."
+        ).format(needed),
+    }
+
+
+def _unresolved_references(value: Any, names: dict) -> set:
+    """Indices this value points at that produced no document."""
+    return {index for index in _references_in(value) if index not in names}
+
+
+def _references_in(value: Any) -> set:
+    """Every "@k" buried anywhere in a payload, child rows included."""
+    if isinstance(value, str):
+        match = _BACK_REFERENCE.match(value.strip())
+        return {int(match.group(1))} if match else set()
+    if isinstance(value, dict):
+        return set().union(*(_references_in(v) for v in value.values())) if value else set()
+    if isinstance(value, (list, tuple)):
+        return set().union(*(_references_in(v) for v in value)) if value else set()
+    return set()
+
+
+def _with_references_resolved(value: Any, names: dict) -> Any:
+    """The same payload with every "@k" replaced by the name it stands for."""
+    if isinstance(value, str):
+        match = _BACK_REFERENCE.match(value.strip())
+        return names[int(match.group(1))] if match else value
+    if isinstance(value, dict):
+        return {k: _with_references_resolved(v, names) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_with_references_resolved(v, names) for v in value]
+    return value
+
+
+def create_documents_batch(
+    documents: Sequence[dict],
+    run_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    approved_by: Optional[str] = None,
+) -> dict:
+    """Create many documents in one transaction. Kept for callers that only create.
+
+    One code path does the work; this only speaks the older answer's vocabulary.
+    """
+    result = write_documents_batch(
+        [{**entry, "action": "create"} for entry in documents],
+        run_id=run_id, session_id=session_id, approved_by=approved_by,
+    )
+    results = result["results"]
+    return {
+        "created": sum(1 for r in results if r["outcome"] == "CREATED"),
+        "replayed": sum(1 for r in results if r["outcome"] == "REPLAYED"),
+        "rejected": result["rejected"] + result["skipped"],
         "results": results,
     }
 
