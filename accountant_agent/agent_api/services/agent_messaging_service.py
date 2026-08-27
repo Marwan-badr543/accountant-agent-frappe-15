@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -309,7 +308,7 @@ def _send_gmail(settings, to: str, subject: str, body: str, attachments: list[di
 	message.set_content(body or "")
 
 	for attachment in attachments:
-		maintype, _, subtype = attachment["mimetype"].partition("/")
+		maintype, _sep, subtype = attachment["mimetype"].partition("/")
 		message.add_attachment(
 			attachment["content"],
 			maintype=maintype or "application",

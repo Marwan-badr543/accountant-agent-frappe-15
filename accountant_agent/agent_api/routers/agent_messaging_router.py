@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -30,7 +29,11 @@ from accountant_agent.agent_api.services.agent_messaging_service import (
 	MessagingError,
 	ProviderRefusedError,
 	UnknownDestinationError,
+)
+from accountant_agent.agent_api.services.agent_messaging_service import (
 	get_messaging_config as read_messaging_config,
+)
+from accountant_agent.agent_api.services.agent_messaging_service import (
 	send_message as send_message_service,
 )
 

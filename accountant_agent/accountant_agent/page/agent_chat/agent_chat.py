@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -12,8 +11,8 @@ from base64 import b64decode, b64encode
 from html import escape, unescape
 from typing import Optional
 
-import requests
 import frappe
+import requests
 from frappe import _
 from frappe.model.document import Document
 
@@ -52,7 +51,7 @@ def _assert_signed_in() -> str:
 	return user
 
 
-def get_agent_settings_doc(email: str) -> Optional[Document]:
+def get_agent_settings_doc(email: str) -> Document | None:
 	"""The CALLER'S OWN Agent Settings record for this email, or None.
 
 	Ownership is the check, not existence. Without it, any signed-in ERP user —
@@ -127,7 +126,7 @@ def register_agent_on_server(email: str, password: str, company_name: str, api_k
 			error_msg = response.json().get("detail", "Registration failed.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
 	except requests.exceptions.RequestException as e:
-		frappe.log_error(f"Agent registration request error: {str(e)}", "Accountant Agent Auth")
+		frappe.log_error(f"Agent registration request error: {e!s}", "Accountant Agent Auth")
 		frappe.throw(_("Could not connect to Agent Server. Please make sure the server is running."))
 
 
@@ -142,11 +141,11 @@ def login_agent_on_server(email: str, password: str) -> str:
 		if response.status_code != 200:
 			error_msg = response.json().get("detail", "Login failed. Check your email and password.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
-		
+
 		token_data = response.json()
 		return token_data.get("access_token")
 	except requests.exceptions.RequestException as e:
-		frappe.log_error(f"Agent login request error: {str(e)}", "Accountant Agent Auth")
+		frappe.log_error(f"Agent login request error: {e!s}", "Accountant Agent Auth")
 		frappe.throw(_("Could not connect to Agent Server. Please make sure the server is running."))
 
 
@@ -160,14 +159,14 @@ def refresh_agent_token_on_server(access_token: str) -> str:
 		if response.status_code == 200:
 			return response.json().get("access_token")
 	except Exception as e:
-		frappe.log_error(f"Agent token refresh request error: {str(e)}", "Accountant Agent Refresh")
+		frappe.log_error(f"Agent token refresh request error: {e!s}", "Accountant Agent Refresh")
 	return None
 
 
 # ---------------- Database Connection Helpers ----------------
 
 def save_agent_settings(
-	email: str, api_key: Optional[str] = None, access_token: Optional[str] = None
+	email: str, api_key: str | None = None, access_token: str | None = None
 ) -> None:
 	"""Create or update the caller's Agent Settings record.
 
@@ -244,10 +243,10 @@ def deprecate_previous_plans(session_id: str) -> None:
 							json.dumps(plan_data, ensure_ascii=False)
 						)
 				except Exception as json_err:
-					frappe.log_error(f"Error deprecating plan message {msg.name}: {str(json_err)}", "Accountant Agent Deprecate Plan")
+					frappe.log_error(f"Error deprecating plan message {msg.name}: {json_err!s}", "Accountant Agent Deprecate Plan")
 		frappe.db.commit()
 	except Exception as e:
-		frappe.log_error(f"Error in deprecate_previous_plans: {str(e)}", "Accountant Agent Deprecate Plan")
+		frappe.log_error(f"Error in deprecate_previous_plans: {e!s}", "Accountant Agent Deprecate Plan")
 
 
 def save_chat_history(session_id: str, sender: str, content: str) -> None:
@@ -267,7 +266,7 @@ def save_chat_history(session_id: str, sender: str, content: str) -> None:
 		doc.insert(ignore_permissions=True)
 		frappe.db.commit()
 	except Exception as e:
-		frappe.log_error(f"Error saving user message to history: {str(e)}", "Accountant Agent Chat")
+		frappe.log_error(f"Error saving user message to history: {e!s}", "Accountant Agent Chat")
 
 
 def save_chat_event_if_not_duplicate(session_id: str, sender: str, content: str) -> None:
@@ -283,7 +282,7 @@ def save_chat_event_if_not_duplicate(session_id: str, sender: str, content: str)
 			return
 		save_chat_history(session_id, sender, content)
 	except Exception as e:
-		frappe.log_error(f"Error checking/saving chat event: {str(e)}", "Accountant Agent Chat Event")
+		frappe.log_error(f"Error checking/saving chat event: {e!s}", "Accountant Agent Chat Event")
 
 
 def build_history_payload(session_id: str) -> str:
@@ -475,11 +474,11 @@ def _prose_only(content: str) -> str:
 def post_message_to_agent(
 	message: str,
 	token: str,
-	custom_instructions: str = None,
-	session_id: str = None,
+	custom_instructions: str | None = None,
+	session_id: str | None = None,
 	agent_type: str = "auto",
-	file_urls: list = None,
-	history: list = None,
+	file_urls: list | None = None,
+	history: list | None = None,
 ) -> requests.Response:
 	"""Sends message to the agent server chat API, with optional attached files and agent_type."""
 	headers = {
@@ -547,7 +546,7 @@ def get_connection_status(agent_email=None):
 	user = frappe.session.user
 	if user == "Guest" or not agent_email:
 		return {"connected": False, "email": None}
-	
+
 	try:
 		doc = get_agent_settings_doc(agent_email)
 		if doc:
@@ -555,8 +554,8 @@ def get_connection_status(agent_email=None):
 			if token:
 				return {"connected": True, "email": doc.email}
 	except Exception as e:
-		frappe.log_error(f"Error checking connection status: {str(e)}", "Accountant Agent Connect")
-	
+		frappe.log_error(f"Error checking connection status: {e!s}", "Accountant Agent Connect")
+
 	return {"connected": False, "email": None}
 
 
@@ -566,25 +565,25 @@ def authenticate_agent(mode, email, password, company_name=None):
 	user = frappe.session.user
 	if user == "Guest":
 		frappe.throw(_("Please log in to ERPNext first."))
-	
+
 	if not email or not password:
 		frappe.throw(_("Email and password are required."))
 
 	assert_agent_account_is_connectable(email)
-	
+
 	if mode == "signup":
 		if not company_name:
 			frappe.throw(_("Company Name is required for registration."))
-		
+
 		# Generate new API key UUID
 		api_key_uuid = str(uuid.uuid4())
-		
+
 		if get_agent_settings_doc(email):
 			frappe.throw(_(f"Agent Settings record already exists for {email}."))
-			
+
 		# Store email & key local first
 		save_agent_settings(email, api_key=api_key_uuid)
-		
+
 		# Create the user on server
 		try:
 			register_agent_on_server(email, password, company_name, api_key_uuid)
@@ -595,21 +594,21 @@ def authenticate_agent(mode, email, password, company_name=None):
 				frappe.delete_doc("Agent Settings", doc.name, ignore_permissions=True)
 				frappe.db.commit()
 			raise e
-		
+
 		# Automatically login to acquire token
 		access_token = login_agent_on_server(email, password)
 		save_agent_settings(email, access_token=access_token)
-		
+
 	elif mode == "login":
 		# Authenticate with agent server
 		access_token = login_agent_on_server(email, password)
-		
+
 		# Check if local record exists (must exist as requested by user)
 		if not get_agent_settings_doc(email):
 			frappe.throw(_("Agent settings not found for this email. Please sign up first."))
-			
+
 		save_agent_settings(email, access_token=access_token)
-		
+
 	else:
 		frappe.throw(_("Invalid mode specified."))
 
@@ -643,7 +642,7 @@ def get_latest_plan_message(session_id: str, lock: bool = False):
 					# Return fresh doc after lock is acquired
 					return frappe.get_doc("Agent Chat History", msg.name)
 				except Exception as e:
-					frappe.log_error(f"Database lock timeout or error: {str(e)}", "Accountant Agent Plan Lock")
+					frappe.log_error(f"Database lock timeout or error: {e!s}", "Accountant Agent Plan Lock")
 					frappe.throw(_("Could not acquire lock on the plan record. Please try again."))
 			return msg
 	return None
@@ -680,7 +679,7 @@ def send_message(message, session_id, agent_email, agent_type="auto", file_urls=
 				latest_plan.save(ignore_permissions=True)
 				frappe.db.commit()
 		except Exception as e:
-			frappe.log_error(f"Error updating plan status JSON: {str(e)}", "Accountant Agent Plan Status Update")
+			frappe.log_error(f"Error updating plan status JSON: {e!s}", "Accountant Agent Plan Status Update")
 
 	# THE CUSTOMER'S OWN WORDS ALWAYS GO INTO THEIR TRANSCRIPT.
 	#
@@ -819,11 +818,11 @@ def process_agent_message_background(
 			if new_access_token:
 				save_agent_settings(agent_email, access_token=new_access_token)
 				headers["Authorization"] = f"Bearer {new_access_token}"
-				
+
 				# Re-open/reset files
 				for f in opened_files:
 					f.seek(0)
-					
+
 				response = requests.post(
 					endpoint_url,
 					data=payload_data,
@@ -1243,7 +1242,7 @@ def cancel_agent(session_id, agent_email):
 	}
 	try:
 		response = requests.post(f"{get_agent_server_url()}/agent/cancel", json=payload, headers=headers, timeout=15)
-		
+
 		# Handle expired token (401)
 		if response.status_code == 401:
 			new_access_token = refresh_agent_token_on_server(access_token)
@@ -1255,22 +1254,22 @@ def cancel_agent(session_id, agent_email):
 				# Clear invalid token to force re-login
 				save_agent_settings(agent_email, access_token="")
 				frappe.throw(_("Session expired. Please reconnect."))
-				
+
 		if response.status_code != 200:
 			error_msg = response.json().get("detail", "Error from Agent Server.")
 			frappe.throw(_(f"Agent Server Error: {error_msg}"))
-			
+
 		save_chat_event_if_not_duplicate(session_id, "ai", "⚠️ **Cancelled**")
 		update_chat_timestamp(session_id)
 		return {"success": True, "message": response.json().get("message")}
-		
+
 	except requests.exceptions.RequestException as e:
-		frappe.log_error(f"Agent cancel request exception: {str(e)}", "Accountant Agent Cancel")
+		frappe.log_error(f"Agent cancel request exception: {e!s}", "Accountant Agent Cancel")
 		frappe.throw(_("Unable to communicate with Agent Server. Please check if it's running."))
 
 
 @frappe.whitelist()
-def get_chat_history(session_id: str, limit: Optional[int] = None) -> list[dict]:
+def get_chat_history(session_id: str, limit: int | None = None) -> list[dict]:
 	"""The caller's own transcript for one session, most recent page first.
 
 	Bounded: a year-old reconciliation thread is not something to serialise in
@@ -1295,7 +1294,7 @@ def disconnect_agent(agent_email):
 	"""Disconnects the agent for the given email by clearing the access token locally."""
 	if not agent_email:
 		return {"success": False}
-		
+
 	_assert_signed_in()
 
 	doc = get_agent_settings_doc(agent_email)
@@ -1364,7 +1363,7 @@ def get_chats():
 	user = frappe.session.user
 	if user == "Guest":
 		return []
-		
+
 	return frappe.get_all(
 		"Agent Chats",
 		filters={"owner": user},
@@ -1379,9 +1378,9 @@ def create_chat(title=None):
 	user = frappe.session.user
 	if user == "Guest":
 		frappe.throw(_("Please log in to ERPNext first."))
-		
+
 	session_id = str(uuid.uuid4())
-	
+
 	doc = frappe.get_doc({
 		"doctype": "Agent Chats",
 		"session_id": session_id,
@@ -1390,7 +1389,7 @@ def create_chat(title=None):
 	})
 	doc.insert(ignore_permissions=True)
 	frappe.db.commit()
-	
+
 	return {
 		"name": doc.name,
 		"session_id": doc.session_id,
@@ -1404,19 +1403,19 @@ def update_chat_title(session_id, title):
 	"""Updates the title of a chat session."""
 	if not session_id or not title:
 		frappe.throw(_("Session ID and Title are required."))
-		
+
 	if not frappe.db.exists("Agent Chats", session_id):
 		frappe.throw(_("Chat session not found."))
-		
+
 	doc = frappe.get_doc("Agent Chats", session_id)
 	if doc.owner != frappe.session.user:
 		frappe.throw(_("Not authorized to rename this chat."))
-		
+
 	doc.title = title
 	doc.last_update = frappe.utils.now_datetime()
 	doc.save(ignore_permissions=True)
 	frappe.db.commit()
-	
+
 	return {
 		"name": doc.name,
 		"session_id": doc.session_id,
@@ -1430,17 +1429,17 @@ def delete_chat(session_id):
 	"""Deletes a chat session (cascade deletion of messages is handled by the before_delete hook)."""
 	if not session_id:
 		return {"success": False}
-		
+
 	if not frappe.db.exists("Agent Chats", session_id):
 		return {"success": False}
-		
+
 	doc = frappe.get_doc("Agent Chats", session_id)
 	if doc.owner != frappe.session.user:
 		frappe.throw(_("Not authorized to delete this chat."))
-		
+
 	frappe.delete_doc("Agent Chats", session_id, ignore_permissions=True)
 	frappe.db.commit()
-	
+
 	return {"success": True}
 
 
@@ -1450,10 +1449,10 @@ def create_chat_with_id(session_id, title=None):
 	user = frappe.session.user
 	if user == "Guest":
 		frappe.throw(_("Please log in to ERPNext first."))
-		
+
 	if not session_id:
 		frappe.throw(_("Session ID is required."))
-		
+
 	if frappe.db.exists("Agent Chats", session_id):
 		frappe.throw(_("Chat session already exists."))
 
@@ -1464,7 +1463,7 @@ def create_chat_with_id(session_id, title=None):
 		uuid.UUID(str(session_id))
 	except (ValueError, AttributeError, TypeError):
 		frappe.throw(_("Invalid session identifier."), frappe.ValidationError)
-		
+
 	doc = frappe.get_doc({
 		"doctype": "Agent Chats",
 		"session_id": session_id,
@@ -1473,7 +1472,7 @@ def create_chat_with_id(session_id, title=None):
 	})
 	doc.insert(ignore_permissions=True)
 	frappe.db.commit()
-	
+
 	return {
 		"name": doc.name,
 		"session_id": doc.session_id,
@@ -1631,7 +1630,7 @@ def _upload_root(user: str) -> str:
 	return frappe.get_site_path("private", "files", AGENT_UPLOAD_DIR, _owner_token(user))
 
 
-def resolve_agent_upload_path(file_url: str, user: str) -> Optional[str]:
+def resolve_agent_upload_path(file_url: str, user: str) -> str | None:
 	"""Filesystem path for a stored attachment URL, or None if it is not the caller's.
 
 	Accepts the private form written since this app started storing uploads

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -31,10 +30,9 @@ from accountant_agent.agent_api.services.agent_api_service import (
 	authenticate_by_api_key,
 	build_doctype_schema_summary,
 	process_clarification_request,
-	validate_and_execute_query,
 	save_generated_file,
+	validate_and_execute_query,
 )
-
 
 # ─── Input Extraction Helpers ───────────────────────────────────────────────
 

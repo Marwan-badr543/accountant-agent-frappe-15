@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -195,7 +194,7 @@ class TestPermissionsDecide(unittest.TestCase):
         self.assertTrue(bench.queries, "no query was issued at all")
 
     def test_a_doctype_the_agent_may_not_read_is_named_not_dropped(self):
-        with _world() as bench:
+        with _world():
             with mock.patch.object(
                 svc, "read_permitted_documents", side_effect=frappe.PermissionError
             ):
@@ -290,7 +289,7 @@ class TestFindingTheRightDocument(unittest.TestCase):
 
     def test_the_like_ladder_widens_past_a_separator_the_erp_never_stored(self):
         with _world():
-            result = search_documents(["Sales Invoice"], text="Zuckerman – Security")
+            result = search_documents(["Sales Invoice"], text="Zuckerman – Security")  # noqa: RUF001 -- real en dash the ERP never stored, that's the point of the test
         self.assertEqual([d["docname"] for d in result["documents"]],
                          ["ACC-SINV-2026-00007"])
 

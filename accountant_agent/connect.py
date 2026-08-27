@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -145,9 +144,9 @@ def _ensure_agent_credentials(force_new: bool = False) -> dict[str, str]:
 
 def _record_connection(
     doc: Any,
-    erp_connection_id: Optional[str] = None,
-    recording_enabled: Optional[bool] = None,
-    last_error: Optional[str] = None,
+    erp_connection_id: str | None = None,
+    recording_enabled: bool | None = None,
+    last_error: str | None = None,
 ) -> None:
     """Persist what the platform told us, so status never needs a network call.
 
@@ -175,7 +174,7 @@ def _record_connection(
 
 
 def _platform_request(
-    doc: Any, method: str, path: str, data: Optional[dict] = None
+    doc: Any, method: str, path: str, data: dict | None = None
 ) -> dict:
     """Call the platform as this customer, refreshing the token once on 401.
 
@@ -188,7 +187,8 @@ def _platform_request(
     error that reads like an authentication failure.
     """
     from accountant_agent.accountant_agent.page.agent_chat.agent_chat import (
-        refresh_agent_token_on_server, save_agent_settings,
+        refresh_agent_token_on_server,
+        save_agent_settings,
     )
 
     access_token = doc.get_password("access_token", raise_exception=False)
@@ -261,7 +261,7 @@ def _platform_error(response: requests.Response) -> str:
 
 
 @frappe.whitelist()
-def get_write_connection_status(agent_email: Optional[str] = None) -> dict:
+def get_write_connection_status(agent_email: str | None = None) -> dict:
     """Everything the setup screen needs, read from THIS site only.
 
     Deliberately makes no network call. If the platform were asked and happened

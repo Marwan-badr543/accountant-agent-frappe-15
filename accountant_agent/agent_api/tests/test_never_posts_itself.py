@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -44,7 +43,6 @@ from accountant_agent.agent_api.services.agent_write_service import (
 	_CALLER_MUST_NOT_SET,
 	_only_the_caller_s_fields,
 )
-
 
 A_POSTED_ENTRY = {
 	"doctype": "Journal Entry",

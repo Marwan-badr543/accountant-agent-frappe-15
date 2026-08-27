@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -52,7 +51,7 @@ def next_savepoint_name(ordinal: int) -> str:
 # ─── Write Log ───────────────────────────────────────────────────────────────
 
 
-def find_write_log_by_key(idempotency_key: str) -> Optional[dict]:
+def find_write_log_by_key(idempotency_key: str) -> dict | None:
     """Return the existing log row for a key, or None.
 
     This is the timeout-recovery lookup: a caller that did not receive a
@@ -86,9 +85,9 @@ def reserve_write_log(
     action: str,
     target_doctype: str,
     request_digest: str,
-    run_id: Optional[str],
-    session_id: Optional[str],
-    approved_by: Optional[str],
+    run_id: str | None,
+    session_id: str | None,
+    approved_by: str | None,
 ) -> Any:
     """Insert the IN_FLIGHT reservation for a write.
 
@@ -121,8 +120,8 @@ def commit_write_log(
     log: Any,
     target_docname: str,
     docstatus_written: int,
-    amount_written: Optional[float],
-    response_snapshot: Optional[dict],
+    amount_written: float | None,
+    response_snapshot: dict | None,
 ) -> None:
     """Mark a reservation COMMITTED, in the same transaction as the document.
 
@@ -164,8 +163,8 @@ def record_failed_attempt(
     action: str,
     target_doctype: str,
     request_digest: str,
-    run_id: Optional[str],
-    session_id: Optional[str],
+    run_id: str | None,
+    session_id: str | None,
     error_code: str,
     error_message: str,
 ) -> None:
@@ -276,7 +275,7 @@ def run_totals_so_far(run_id: str) -> tuple[int, float]:
 def read_permitted_documents(
     doctype: str,
     filters: list,
-    or_filters: Optional[list],
+    or_filters: list | None,
     fields: list[str],
     limit: int,
     order_by: str,
@@ -329,7 +328,7 @@ def submit_document(doctype: str, docname: str) -> Any:
     return doc
 
 
-def cancel_document(doctype: str, docname: str, reason: Optional[str]) -> Any:
+def cancel_document(doctype: str, docname: str, reason: str | None) -> Any:
     """Cancel a submitted document. Runs check_permission("cancel")."""
     doc = frappe.get_doc(doctype, docname)
     if reason and doc.meta.has_field("remarks"):
@@ -375,7 +374,7 @@ def has_server_script(doctype: str) -> bool:
     )
 
 
-def list_written_documents(limit: int = 20, target_doctype: Optional[str] = None) -> list[dict]:
+def list_written_documents(limit: int = 20, target_doctype: str | None = None) -> list[dict]:
     """Documents this agent actually created, newest first.
 
     The authority for "did the agent write this?", and still the FIRST place a
@@ -409,7 +408,7 @@ def list_written_documents(limit: int = 20, target_doctype: Optional[str] = None
     )
 
 
-def get_document_state(doctype: str, docname: str) -> Optional[dict]:
+def get_document_state(doctype: str, docname: str) -> dict | None:
     """Current docstatus and headline amount, read as the agent user."""
     if not frappe.db.exists(doctype, docname):
         return None
@@ -425,7 +424,7 @@ def get_document_state(doctype: str, docname: str) -> Optional[dict]:
     }
 
 
-def _headline_amount(doc: Any) -> Optional[float]:
+def _headline_amount(doc: Any) -> float | None:
     for fieldname in ("base_grand_total", "grand_total", "total_debit", "paid_amount"):
         value = doc.get(fieldname)
         if value:

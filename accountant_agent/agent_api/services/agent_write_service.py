@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -32,14 +31,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional, Sequence
+from typing import Any, Optional
 
 import frappe
 from frappe import _
 
 from accountant_agent.agent_api.db.agent_api_repository import (
     count_link_candidates,
+)
+from accountant_agent.agent_api.db.agent_api_repository import (
     read_link_candidates as search_link_candidates,
 )
 from accountant_agent.agent_api.db.agent_write_repository import (
@@ -50,11 +52,11 @@ from accountant_agent.agent_api.db.agent_write_repository import (
     find_write_log_by_key,
     get_doctype_meta,
     get_document_state,
-    list_written_documents,
     get_session_user,
     get_write_policy_doc,
     has_server_script,
     insert_document,
+    list_written_documents,
     next_savepoint_name,
     read_permitted_documents,
     record_failed_attempt,
@@ -71,7 +73,7 @@ class AgentWriteError(Exception):
 
     code: str = "WRITE_ERROR"
 
-    def __init__(self, message: str, code: Optional[str] = None) -> None:
+    def __init__(self, message: str, code: str | None = None) -> None:
         self.message = message
         if code:
             self.code = code
@@ -189,7 +191,7 @@ class WritePolicy:
     #: list this app wrote on their behalf and never mentioned again.
     restrict_to_listed_doctypes: bool = False
 
-    def permission_for(self, doctype: str) -> Optional[DocTypePermission]:
+    def permission_for(self, doctype: str) -> DocTypePermission | None:
         for row in self.allowed_document_types:
             if row.document_type == doctype:
                 return row
@@ -226,7 +228,7 @@ class PreflightFinding:
     severity: str  # BLOCKING | ASK_USER | WARNING | INFO
     code: str
     field_path: str
-    raw_value: Optional[str]
+    raw_value: str | None
     human_message: str
 
     def as_dict(self) -> dict:
@@ -559,7 +561,7 @@ def assert_run_caps(policy: WritePolicy, document_count: int, total_amount: floa
 
 def assert_run_caps_for_run(
     policy: WritePolicy,
-    run_id: Optional[str],
+    run_id: str | None,
     adding_documents: int,
     adding_amount: float,
 ) -> None:
@@ -650,7 +652,7 @@ def build_document_spec(doctype: str) -> dict:
     }
 
 
-def _child_field_spec(child_doctype: Optional[str]) -> list[dict]:
+def _child_field_spec(child_doctype: str | None) -> list[dict]:
     if not child_doctype or not doctype_exists(child_doctype):
         return []
     meta = get_doctype_meta(child_doctype)
@@ -810,7 +812,7 @@ def _search_one_reference(ref: dict, limit: int) -> dict:
     offset = int(ref.get("offset") or 0)
     scan_limit = min(limit, MAX_CANDIDATE_SCAN)
 
-    total, rows, or_filters = _search_with_widening(
+    total, rows, _or_filters = _search_with_widening(
         doctype=target_doctype,
         raw_value=raw_value,
         search_fields=search_fields,
@@ -929,7 +931,7 @@ def _search_with_widening(
     filters: dict,
     limit: int,
     offset: int,
-) -> tuple[int, list[dict], Optional[list]]:
+) -> tuple[int, list[dict], list | None]:
     """Walk the LIKE ladder, stopping at the first rung that matches anything.
 
     Returns (total_matched, rows, or_filters_used). An empty raw value means
@@ -947,7 +949,7 @@ def _search_with_widening(
         return total, rows, None
 
     for pattern in patterns:
-        or_filters = [[field, "like", pattern] for field in search_fields]
+        or_filters = [[f, "like", pattern] for f in search_fields]
         rows = search_link_candidates(
             doctype=doctype, filters=filters, or_filters=or_filters,
             fields=list(display_fields), limit=limit, offset=offset,
@@ -1070,9 +1072,9 @@ _DOCUMENT_DATE_FIELDS: tuple[str, ...] = ("posting_date", "transaction_date", "d
 def search_documents(
     doctypes: Sequence[str],
     text: str = "",
-    docstatus: Optional[Sequence[int]] = None,
+    docstatus: Sequence[int] | None = None,
     limit: int = MAX_DOCUMENTS_OFFERED,
-    company: Optional[str] = None,
+    company: str | None = None,
 ) -> dict:
     """Recent documents matching what somebody described, across DocTypes.
 
@@ -1200,7 +1202,7 @@ def _search_one_doctype(
 def _documents_with_widening(
     doctype: str, text: str, search_fields: Sequence[str], filters: list,
     fields: list[str], limit: int, order_by: str,
-) -> tuple[list[dict], Optional[list]]:
+) -> tuple[list[dict], list | None]:
     """Walk the same LIKE ladder the candidate search uses, for the same reason.
 
     An accountant who types "Zuckerman Security" about "Zuckerman Security Ltd."
@@ -1217,7 +1219,7 @@ def _documents_with_widening(
         return rows, None
 
     for pattern in patterns:
-        or_filters = [[field, "like", pattern] for field in search_fields]
+        or_filters = [[f, "like", pattern] for f in search_fields]
         rows = read_permitted_documents(
             doctype=doctype, filters=filters, or_filters=or_filters,
             fields=fields, limit=limit, order_by=order_by,
@@ -1251,7 +1253,7 @@ def _document_row(doctype: str, row: dict, date_field: str) -> dict:
     }
 
 
-def _row_amount(row: dict) -> Optional[float]:
+def _row_amount(row: dict) -> float | None:
     for fieldname in _DOCUMENT_AMOUNT_FIELDS:
         value = row.get(fieldname)
         if value:
@@ -1829,7 +1831,7 @@ def _payload_amount(payload: dict) -> float:
     return total
 
 
-def _document_amount(doc: Any) -> Optional[float]:
+def _document_amount(doc: Any) -> float | None:
     """Best-effort headline amount, for the write log and the run caps."""
     for fieldname in ("base_grand_total", "grand_total", "total_debit", "base_paid_amount", "paid_amount"):
         value = doc.get(fieldname)
@@ -1847,9 +1849,9 @@ def _document_amount(doc: Any) -> Optional[float]:
 def create_document(
     payload: dict,
     idempotency_key: str,
-    run_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    approved_by: Optional[str] = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    approved_by: str | None = None,
     savepoint_ordinal: int = 0,
     enforce_run_caps: bool = True,
 ) -> dict:
@@ -1976,9 +1978,9 @@ def submit_existing_document(
     doctype: str,
     docname: str,
     idempotency_key: str,
-    run_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    approved_by: Optional[str] = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    approved_by: str | None = None,
     savepoint_ordinal: int = 0,
 ) -> dict:
     """Post a draft to the ledger. A separate action with a separate key.
@@ -2005,9 +2007,9 @@ def cancel_existing_document(
     docname: str,
     reason: str,
     idempotency_key: str,
-    run_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    approved_by: Optional[str] = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    approved_by: str | None = None,
     savepoint_ordinal: int = 0,
 ) -> dict:
     """Reverse a submitted document. Never edits it - immutability is the point."""
@@ -2031,9 +2033,9 @@ def amend_existing_document(
     docname: str,
     payload: dict,
     idempotency_key: str,
-    run_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    approved_by: Optional[str] = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    approved_by: str | None = None,
     savepoint_ordinal: int = 0,
 ) -> dict:
     """Create a corrected successor to a cancelled document."""
@@ -2057,9 +2059,9 @@ def _mutate_existing(
     doctype: str,
     docname: str,
     idempotency_key: str,
-    run_id: Optional[str],
-    session_id: Optional[str],
-    approved_by: Optional[str],
+    run_id: str | None,
+    session_id: str | None,
+    approved_by: str | None,
     savepoint_ordinal: int,
     operation,
 ) -> dict:
@@ -2148,9 +2150,9 @@ def _mutate_existing(
 
 def create_documents_batch(
     documents: Sequence[dict],
-    run_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    approved_by: Optional[str] = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    approved_by: str | None = None,
 ) -> dict:
     """Create many documents in one transaction, one savepoint each.
 
@@ -2227,7 +2229,7 @@ def create_documents_batch(
     }
 
 
-def list_agent_documents(limit: int = 20, target_doctype: Optional[str] = None) -> dict:
+def list_agent_documents(limit: int = 20, target_doctype: str | None = None) -> dict:
     """Everything this agent has written, newest first.
 
     Backs "submit that entry" / "reverse the one you just made": the agent

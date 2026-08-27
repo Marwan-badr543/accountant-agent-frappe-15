@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -52,7 +51,7 @@ def _load_env() -> None:
         app_root = os.path.abspath(os.path.join(frappe.get_app_path("accountant_agent"), ".."))
         env_path = os.path.join(app_root, ".env")
         if os.path.exists(env_path):
-            with open(env_path, "r", encoding="utf-8") as f:
+            with open(env_path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line or line.startswith("#"):
@@ -151,7 +150,7 @@ class AgentSettings(Document):
             )
 
 
-def _get_own_settings_doc(email: str) -> Optional[Document]:
+def _get_own_settings_doc(email: str) -> Document | None:
     """The caller's OWN Agent Settings record, or None.
 
     Ownership, not merely existence, is the check. ``email`` arrives from the
@@ -171,7 +170,7 @@ def _get_own_settings_doc(email: str) -> Optional[Document]:
 
 
 @frappe.whitelist()
-def get_agent_settings_name(email: str) -> Optional[str]:
+def get_agent_settings_name(email: str) -> str | None:
     """Document name of the caller's own Agent Settings record for this email."""
     doc = _get_own_settings_doc(email)
     return doc.name if doc else None
@@ -192,7 +191,7 @@ def get_user_usage(email: str) -> dict:
         return zero
 
     access_token = doc.get_password("access_token", raise_exception=False)
-    user_id: Optional[str] = None
+    user_id: str | None = None
     if access_token:
         user_id = decode_jwt_payload(access_token).get("sub")
 

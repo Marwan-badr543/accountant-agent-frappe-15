@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -55,7 +54,6 @@ from accountant_agent.accountant_agent.page.agent_chat.agent_chat import (
 	_readable_response,
 )
 
-
 ONE = [{
 	"id": "party",
 	"question": "من هو العميل في هذه العملية؟",
@@ -63,7 +61,7 @@ ONE = [{
 	"allow_custom": True,
 }]
 
-TWO = ONE + [{"id": "amount", "question": "How much was it?", "options": []}]
+TWO = [*ONE, {"id": "amount", "question": "How much was it?", "options": []}]
 
 #: The card as the agent renders it: a preamble, the question, and a closing
 #: line telling them they may type instead of tapping. Only the middle line is

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # This file has been replaced by the three-layer architecture:
 #   - routers/agent_api_router.py  (Controller)
 #   - services/agent_api_service.py (Service)

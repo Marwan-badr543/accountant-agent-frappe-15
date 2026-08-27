@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -117,7 +116,7 @@ def _parse_json_param(value: Any, name: str) -> Any:
 
 
 @frappe.whitelist()
-def get_document_spec(doctype: Optional[str] = None) -> dict:
+def get_document_spec(doctype: str | None = None) -> dict:
     """Field specification for a DocType, so the agent never guesses a field name."""
     try:
         assert_session_is_agent_user()
@@ -130,7 +129,7 @@ def get_document_spec(doctype: Optional[str] = None) -> dict:
 
 @frappe.whitelist()
 def search_candidates_bulk_endpoint(
-    refs: Optional[str] = None, limit: Optional[int] = None
+    refs: str | None = None, limit: int | None = None
 ) -> dict:
     """Permission-filtered candidates for many references in one round trip.
 
@@ -162,7 +161,7 @@ def get_write_policy() -> dict:
 
 
 @frappe.whitelist()
-def get_write_log_endpoint(idempotency_key: Optional[str] = None) -> dict:
+def get_write_log_endpoint(idempotency_key: str | None = None) -> dict:
     """Resolve the outcome of a request whose response was never received.
 
     The ONLY recovery path for an unknown outcome. A timed-out caller asks what
@@ -179,7 +178,7 @@ def get_write_log_endpoint(idempotency_key: Optional[str] = None) -> dict:
 
 
 @frappe.whitelist()
-def list_documents(limit: Optional[int] = None, doctype: Optional[str] = None) -> dict:
+def list_documents(limit: int | None = None, doctype: str | None = None) -> dict:
     """Documents this agent created, so it can act on its own work only."""
     try:
         assert_session_is_agent_user()
@@ -195,11 +194,11 @@ def list_documents(limit: Optional[int] = None, doctype: Optional[str] = None) -
 
 @frappe.whitelist()
 def search_documents_endpoint(
-    doctypes: Optional[str] = None,
-    text: Optional[str] = None,
-    docstatus: Optional[str] = None,
-    limit: Optional[int] = None,
-    company: Optional[str] = None,
+    doctypes: str | None = None,
+    text: str | None = None,
+    docstatus: str | None = None,
+    limit: int | None = None,
+    company: str | None = None,
 ) -> dict:
     """Existing documents matching what the user described, whoever wrote them.
 
@@ -229,7 +228,7 @@ def search_documents_endpoint(
 
 
 @frappe.whitelist()
-def preflight(payload: Optional[str] = None, run_dry_run: Optional[int] = None) -> dict:
+def preflight(payload: str | None = None, run_dry_run: int | None = None) -> dict:
     """Validate a document without writing it. Never mutates."""
     try:
         assert_session_is_agent_user()
@@ -249,11 +248,11 @@ def preflight(payload: Optional[str] = None, run_dry_run: Optional[int] = None) 
 
 @frappe.whitelist()
 def create(
-    payload: Optional[str] = None,
-    idempotency_key: Optional[str] = None,
-    run_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    approved_by: Optional[str] = None,
+    payload: str | None = None,
+    idempotency_key: str | None = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    approved_by: str | None = None,
 ) -> dict:
     """Create one document, idempotently."""
     try:
@@ -278,12 +277,12 @@ def create(
 
 @frappe.whitelist()
 def submit(
-    doctype: Optional[str] = None,
-    docname: Optional[str] = None,
-    idempotency_key: Optional[str] = None,
-    run_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    approved_by: Optional[str] = None,
+    doctype: str | None = None,
+    docname: str | None = None,
+    idempotency_key: str | None = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    approved_by: str | None = None,
 ) -> dict:
     """Post a draft to the ledger. Separately authorised from creation."""
     try:
@@ -306,13 +305,13 @@ def submit(
 
 @frappe.whitelist()
 def cancel(
-    doctype: Optional[str] = None,
-    docname: Optional[str] = None,
-    reason: Optional[str] = None,
-    idempotency_key: Optional[str] = None,
-    run_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    approved_by: Optional[str] = None,
+    doctype: str | None = None,
+    docname: str | None = None,
+    reason: str | None = None,
+    idempotency_key: str | None = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    approved_by: str | None = None,
 ) -> dict:
     """Reverse a submitted document."""
     try:
@@ -336,13 +335,13 @@ def cancel(
 
 @frappe.whitelist()
 def amend(
-    doctype: Optional[str] = None,
-    docname: Optional[str] = None,
-    payload: Optional[str] = None,
-    idempotency_key: Optional[str] = None,
-    run_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    approved_by: Optional[str] = None,
+    doctype: str | None = None,
+    docname: str | None = None,
+    payload: str | None = None,
+    idempotency_key: str | None = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    approved_by: str | None = None,
 ) -> dict:
     """Create a corrected successor to a cancelled document."""
     try:
@@ -369,10 +368,10 @@ def amend(
 
 @frappe.whitelist()
 def create_batch(
-    documents: Optional[str] = None,
-    run_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    approved_by: Optional[str] = None,
+    documents: str | None = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    approved_by: str | None = None,
 ) -> dict:
     """Create many documents in one transaction, one savepoint each.
 

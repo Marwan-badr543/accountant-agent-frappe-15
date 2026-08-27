@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026, Marwan Badr and contributors
 # For license information, please see license.txt
 
@@ -26,7 +25,7 @@ from accountant_agent.accountant_agent.doctype.agent_settings.agent_settings imp
 )
 
 
-def find_settings_name_by_api_key(api_key: str) -> Optional[str]:
+def find_settings_name_by_api_key(api_key: str) -> str | None:
     """Resolve an API key to its Agent Settings record name, or None.
 
     Single indexed read on ``api_key_hash``, then a constant-time comparison
@@ -158,7 +157,7 @@ def chat_session_exists(session_id: str) -> bool:
     return bool(frappe.db.exists("Agent Chats", session_id))
 
 
-def get_chat_session_owner(session_id: str) -> Optional[str]:
+def get_chat_session_owner(session_id: str) -> str | None:
     """The ERP user who owns a chat session, or None if it does not exist."""
     return frappe.db.get_value("Agent Chats", session_id, "owner")
 
@@ -232,11 +231,11 @@ def update_chat_last_timestamp(session_id: str) -> None:
 def read_link_candidates(
     doctype: str,
     filters: dict | list,
-    or_filters: Optional[list],
+    or_filters: list | None,
     fields: list[str],
     limit: int,
     offset: int = 0,
-    order_by: Optional[str] = None,
+    order_by: str | None = None,
 ) -> list[dict]:
     """Candidates for one reference. Read-only, and never permission-filtered."""
     return frappe.get_all(
@@ -251,7 +250,7 @@ def read_link_candidates(
 
 
 def count_link_candidates(
-    doctype: str, filters: dict | list, or_filters: Optional[list]
+    doctype: str, filters: dict | list, or_filters: list | None
 ) -> int:
     """How many records actually match, so truncation is never silent."""
     rows = frappe.get_all(
