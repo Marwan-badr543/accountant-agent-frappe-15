@@ -17,7 +17,7 @@
   {"fieldname": "identity_section", "fieldtype": "Section Break", "label": "Message"},
   {"fieldname": "idempotency_key", "fieldtype": "Data", "label": "Idempotency Key", "reqd": 1, "unique": 1, "read_only": 1,
    "description": "Unique per intended message. A retry carrying the same key returns the original receipt instead of sending again."},
-  {"fieldname": "channel", "fieldtype": "Select", "label": "Channel", "options": "gmail\ntelegram", "reqd": 1, "read_only": 1, "in_list_view": 1, "in_standard_filter": 1},
+  {"fieldname": "channel", "fieldtype": "Select", "label": "Channel", "options": "gmail\ntelegram\nslack", "reqd": 1, "read_only": 1, "in_list_view": 1, "in_standard_filter": 1},
   {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "SENT\nREFUSED\nFAILED", "reqd": 1, "read_only": 1, "in_list_view": 1, "in_standard_filter": 1,
    "description": "SENT means the provider accepted it and gave us an id. REFUSED means this site would not send it. FAILED means the provider rejected it."},
   {"fieldname": "column_break_aml1", "fieldtype": "Column Break"},

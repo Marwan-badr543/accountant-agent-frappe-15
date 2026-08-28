@@ -11,7 +11,10 @@
   "column_break_ams1", "gmail_service_account_json", "gmail_last_error",
   "telegram_tab", "telegram_intro", "telegram_enabled", "telegram_bot_token",
   "column_break_ams2", "telegram_last_error",
-  "telegram_destinations_section", "telegram_destinations"
+  "telegram_destinations_section", "telegram_destinations",
+  "slack_tab", "slack_intro", "slack_enabled", "slack_bot_token",
+  "column_break_ams3", "slack_last_error",
+  "slack_destinations_section", "slack_destinations"
  ],
  "fields": [
   {"fieldname": "gmail_tab", "fieldtype": "Tab Break", "label": "Gmail"},
@@ -47,7 +50,24 @@
    "depends_on": "telegram_enabled"},
   {"fieldname": "telegram_destinations", "fieldtype": "Table", "label": "Destinations",
    "options": "Agent Telegram Destination", "depends_on": "telegram_enabled",
-   "description": "The agent can only send to a chat listed here. It cannot invent a destination, and it cannot message someone who has not started the bot."}
+   "description": "The agent can only send to a chat listed here. It cannot invent a destination, and it cannot message someone who has not started the bot."},
+
+  {"fieldname": "slack_tab", "fieldtype": "Tab Break", "label": "Slack"},
+  {"fieldname": "slack_intro", "fieldtype": "HTML",
+   "options": "<div class=\"alert alert-warning\"><b>A Slack bot can only post where it has been invited.</b> Create a Slack app with a bot token (scopes <code>chat:write</code> and <code>files:write</code>), install it to your workspace, then <code>/invite</code> the bot into each channel you list below. There is no way to send to a person or channel the bot has not been added to. The walkthrough is in <code>docs/messaging/SLACK_SETUP.md</code>.</div>"},
+  {"default": "0", "fieldname": "slack_enabled", "fieldtype": "Check", "label": "Send messages through Slack",
+   "description": "Off until a bot token and at least one destination are saved."},
+  {"fieldname": "slack_bot_token", "fieldtype": "Password", "label": "Bot Token",
+   "depends_on": "slack_enabled", "mandatory_depends_on": "slack_enabled",
+   "description": "The Bot User OAuth Token from your Slack app's 'OAuth & Permissions' page, in the form xoxb-... Stored encrypted. Anyone holding it can post as your bot, so treat it as a password."},
+  {"fieldname": "column_break_ams3", "fieldtype": "Column Break"},
+  {"fieldname": "slack_last_error", "fieldtype": "Small Text", "label": "Last Problem", "read_only": 1,
+   "description": "What Slack said the last time a send failed. Cleared on the next success."},
+  {"fieldname": "slack_destinations_section", "fieldtype": "Section Break", "label": "Where the agent may send",
+   "depends_on": "slack_enabled"},
+  {"fieldname": "slack_destinations", "fieldtype": "Table", "label": "Destinations",
+   "options": "Agent Slack Destination", "depends_on": "slack_enabled",
+   "description": "The agent can only post to a channel listed here. It cannot invent a destination, and it cannot post to a channel the bot has not been invited to."}
  ],
  "index_web_pages_for_search": 1,
  "issingle": 1,
