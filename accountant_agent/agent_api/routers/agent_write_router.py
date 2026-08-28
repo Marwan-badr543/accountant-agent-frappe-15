@@ -53,6 +53,7 @@ from accountant_agent.agent_api.services.agent_write_service import (
     cancel_existing_document,
     create_document,
     create_documents_batch,
+    write_documents_batch,
     get_write_log,
     list_agent_documents,
     load_write_policy,
@@ -395,3 +396,37 @@ def create_batch(
         return _error(exc)
     except Exception:
         return _unexpected("create_batch")
+
+
+@frappe.whitelist()
+def write_batch(
+    documents: Optional[str] = None,
+    run_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    approved_by: Optional[str] = None,
+) -> dict:
+    """Every action of one request, in one transaction.
+
+    Creations, submissions, reversals and corrections may sit in the same list,
+    because that is how people ask for work. Continue-on-error across
+    documents, except for the ones that were built out of a document that
+    failed - those are reported as not attempted, naming what they needed.
+    """
+    try:
+        assert_session_is_agent_user()
+        parsed = _parse_json_param(
+            documents if documents is not None else frappe.form_dict.get("documents"),
+            "documents",
+        )
+        return {
+            "batch": write_documents_batch(
+                documents=parsed,
+                run_id=run_id or frappe.form_dict.get("run_id"),
+                session_id=session_id or frappe.form_dict.get("session_id"),
+                approved_by=approved_by or frappe.form_dict.get("approved_by"),
+            )
+        }
+    except AgentWriteError as exc:
+        return _error(exc)
+    except Exception:
+        return _unexpected("write_batch")

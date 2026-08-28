@@ -142,8 +142,23 @@ class FileUploadHandler {
 		});
 	}
 
+	// The extensions the CURRENTLY SELECTED desk accepts.
+	//
+	// Most desks take whatever the practice accepts generally. A desk may narrow
+	// it by putting `allowed_extensions` in its rules block in agent_selector.js;
+	// the reconciliation desk does, because it compares tables. A desk without
+	// the key is unaffected, which is why this falls back rather than defaulting.
+	_desk_extensions() {
+		let selector = this.chat && this.chat.agent_selector ? this.chat.agent_selector : null;
+		let rules = (selector && typeof selector.get_rules === 'function') ? selector.get_rules() : null;
+		let allowed = rules && rules.allowed_extensions;
+		return (Array.isArray(allowed) && allowed.length)
+			? new Set(allowed)
+			: this.ALLOWED_EXTENSIONS;
+	}
+
 	_open_file_picker() {
-		let accept_pattern = Array.from(this.ALLOWED_EXTENSIONS).join(',');
+		let accept_pattern = Array.from(this._desk_extensions()).join(',');
 		let $input = $(`<input type="file" multiple accept="${accept_pattern}" />`);
 		$input.on('change', (e) => {
 			let files = e.target.files;
@@ -162,7 +177,9 @@ class FileUploadHandler {
 
 	_is_allowed_type(filename) {
 		let ext = this._get_file_ext(filename);
-		return this.ALLOWED_EXTENSIONS.has(ext);
+		// The practice-wide allowlist AND this desk's narrower one, when it has
+		// one. The picker already filters, but a drag-and-drop bypasses it.
+		return this.ALLOWED_EXTENSIONS.has(ext) && this._desk_extensions().has(ext);
 	}
 
 	_is_excel(filename) {
@@ -211,11 +228,16 @@ class FileUploadHandler {
 		for (let file of incoming_files) {
 			if (!this._is_allowed_type(file.name)) {
 				let ext = this._get_file_ext(file.name);
-				frappe.show_alert({
-					message: __('File "{0}" has unpermitted type ({1}). Only standard accounting document types are allowed.',
-						[file.name, ext]),
-					indicator: 'red'
-				}, 7);
+				// Name what the desk DOES take: the customer's next action is to
+				// send a different file, so telling them only what failed wastes
+				// a round trip.
+				let desk_exts = this._desk_extensions();
+				let message = (desk_exts !== this.ALLOWED_EXTENSIONS)
+					? __('"{0}" is not a spreadsheet. {1} works with {2} files only.',
+						[file.name, agent_name, Array.from(desk_exts).join(', ')])
+					: __('File "{0}" has unpermitted type ({1}). Only standard accounting document types are allowed.',
+						[file.name, ext]);
+				frappe.show_alert({ message: message, indicator: 'red' }, 7);
 				return false;
 			}
 		}
