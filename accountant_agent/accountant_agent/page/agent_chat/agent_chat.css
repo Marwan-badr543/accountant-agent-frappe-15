@@ -160,6 +160,30 @@
 	--bg-zebra: rgba(255, 255, 255, 0.02);
 }
 
+/* Page title ("AI Accountant Agent") — Frappe's default page-head title
+   renders plain black text that clashes with the rest of this page's
+   Outfit/Indigo design system below it. Restyle it to match. */
+.page-head .title-text {
+	font-family: var(--chat-font);
+	font-weight: 600;
+	font-size: 1.1rem;
+	letter-spacing: -0.01em;
+	color: var(--chat-primary);
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.page-head .title-text::before {
+	content: '';
+	display: inline-block;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--chat-primary);
+	box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.15);
+}
+
 .agent-chat-container {
 	display: flex;
 	flex-direction: column;
